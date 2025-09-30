@@ -1,22 +1,30 @@
-# 高度なRAGシステム (iRAG)
+# Advanced RAG System v2 with SemReRank
 
 ## 概要
 
-このシステムは、文書検索とSQL検索を統合した高度なRAG（Retrieval-Augmented Generation）システムです。Streamlitベースの直感的なUIを提供し、Azure OpenAI Serviceを活用して、多言語対応の自然言語処理による強力な情報検索と質問応答を実現します。データ（CSV/Excel）に対するSQL検索も同時にします。
+このシステムは、**SemReRank論文の手法を実装**した次世代の高度なRAG（Retrieval-Augmented Generation）システムです。Streamlitベースの直感的なUIを提供し、Azure OpenAI Serviceを活用して、日本語専門文書に特化した強力な情報検索と質問応答を実現します。
 
-## 🎯 リファクタリング履歴
+### 🌟 主要な特徴
+
+- **ハイブリッドSudachi形態素解析**: Mode C（長単位）+ Mode A（短単位）+ n-gram
+- **SemReRank**: Personalized PageRankによる意味的関連性を考慮した専門用語抽出
+- **6つの類義語検出手法**: 統計的手法による包括的な関連語の発見
+- **RAG定義生成**: ベクトル検索とLLMによる高品質な用語定義の自動生成
+- **pgvector埋め込みキャッシュ**: コスト削減と高速化
+
+## 🎯 アップデート履歴
+
+### 2025年10月1日 - SemReRank統合と最適化
+- **ハイブリッド形態素解析**: Sudachi Mode C + Mode A による包括的な候補抽出
+- **SemReRank実装**: 低頻度でも重要な専門用語を意味的関連性で救い上げ
+- **類義語検出の統合**: 6つの手法をadvanced_term_extractionに集約
+- **埋め込みキャッシュ**: pgvectorによる高速化とコスト削減
+- **完全ドキュメント**: 全処理ロジックを詳細に記載（2,500行）
 
 ### 2025年9月23日 - コード統合と最適化
 - **ファイル削減**: 45ファイル → 25ファイル（45%削減）
 - **コード統合**: 専門用語処理を`term_extraction.py`に統合
 - **不要コード除去**: 約2000行の重複コードを削除
-- **6つの類義語検出手法**: すべて`term_extraction.py`に集約
-
-### 2025年8月29日 - フォルダ構成リファクタリング
-- **関心の分離**: 機能別にフォルダを整理し、各モジュールの責任を明確化
-- **改修性向上**: 関連ファイルを近接配置し、変更影響範囲を明確化
-- **テスト容易性**: 構造化によりユニットテスト作成が容易に
-- **新規開発者対応**: 直感的な構造で理解しやすく
 
 ## 主な機能
 
@@ -358,39 +366,65 @@ graph TB
 ### 概要
 本システムには、PDFなどの文書から専門用語を自動抽出し、クラスタリングによって自動分類する高度な機能が実装されています。
 
-### 専門用語抽出機能 (`term_extraction.py`)
+### 専門用語抽出機能（最新版）
 
-#### 主な機能
-1. **C値アルゴリズムによる専門用語抽出**
-   - 複合語の出現頻度と文脈を考慮したスコアリング
-   - ネストされた用語（部分文字列）の検出と評価
-   - **TF-IDFは使用せず**、専門用語抽出に特化したC値を採用
-   ```python
-   # C値計算式
-   C-value(a) = log2(|a|) × freq(a)  # 単独出現の場合
-   C-value(a) = log2(|a|) × (freq(a) - (1/|Ta|) × Σ freq(b))  # 他の用語に含まれる場合
+#### 完全なSemReRankパイプライン
 
-   # |a|: 候補語aの文字数
-   # freq(a): 候補語aの出現頻度
-   # Ta: aを部分文字列として含むより長い候補語の集合
-   ```
+```
+Phase 1: ハイブリッド候補抽出
+  ├─ Mode C: 自然な複合語（例: "舶用ディーゼルエンジン"）
+  ├─ Mode A + n-gram: 柔軟な複合語生成
+  ├─ 正規表現: 型式番号・化学式など
+  └─ 複合名詞抽出
 
-2. **類義語・関連語検出メソッド（6つの手法）**
-   - **部分文字列関係**: 包含関係による上位・下位概念の検出
-   - **共起関係分析**: 同一文脈での共起パターン分析（window_size=5）
-   - **編集距離**: 類似度70-95%の語を関連語として検出
-   - **語幹・語尾パターン**: 同じベースを持つ派生語の検出
-   - **略語辞書マッチング**: GMP/適正製造規範などの対応関係
-   - **ドメイン辞書**: 分野固有の関連語マッピング
+Phase 2: 統計的スコアリング
+  ├─ TF-IDF計算
+  ├─ C-value計算
+  └─ 2段階スコア（Seed用/Final用）
 
-3. **SudachiPy Mode.Cによる高精度形態素解析**
-   - 最長一致による複合語の正確な抽出
-   - 専門用語に多い未知語への対応
-   - N-gram生成による候補語の網羅的抽出
+Phase 3: SemReRank適用
+  ├─ 埋め込みキャッシュ取得（pgvector）
+  ├─ 意味的関連性グラフ構築
+  ├─ シード選定（上位N%）
+  ├─ Personalized PageRank実行
+  └─ スコア改訂
 
-4. **Azure OpenAI GPT-4による定義生成**
-   - 抽出された専門用語に対する自動定義生成
-   - 文脈を考慮した高品質な説明文の作成
+Phase 4: 類義語検出
+  ├─ 部分文字列関係
+  ├─ 共起関係分析
+  ├─ 編集距離
+  ├─ 語幹・語尾パターン
+  ├─ 略語パターン
+  └─ ドメイン固有関連語
+
+Phase 5: RAG定義生成
+  ├─ 上位N%選定
+  ├─ ベクトル検索（k=5）
+  └─ LLMで定義生成
+
+Phase 6: LLMフィルタ
+  ├─ バッチ処理（デフォルト10件）
+  └─ 専門用語判定
+```
+
+#### 主要アルゴリズム
+
+**C-value**:
+```python
+C-value(a) = log₂(|a|) × freq(a) - (1/|Ta|) × Σ freq(b)
+```
+
+**Personalized PageRank**:
+```python
+PR(v) = (1 - α) × p(v) + α × Σ (PR(u) / deg(u))
+```
+
+**スコア改訂**:
+```python
+final_score = base_score × (1 + importance / avg_importance - 1)
+```
+
+詳細は [Term_Extraction_Processing_Logic_Documentation.md](Term_Extraction_Processing_Logic_Documentation.md) を参照してください。
 
 ### 専門用語クラスタリング機能 (`term_clustering_analyzer.py`)
 
@@ -503,6 +537,22 @@ python src/scripts/import_terms_to_db.py
    - バッチ処理による効率的な処理
    - PostgreSQLによる永続化
 
+## 📚 ドキュメント
+
+- **[Term_Extraction_Processing_Logic_Documentation.md](Term_Extraction_Processing_Logic_Documentation.md)**: 専門用語抽出システムの完全な処理ロジック（2,500行の詳細ドキュメント）
+- **[SemReRank_Complete_Implementation_Guide.md](SemReRank_Complete_Implementation_Guide.md)**: SemReRank実装ガイド
+- **docs/**: 各種機能のドキュメント
+
+## 🔬 参考文献
+
+1. Zhang, Z., Gao, J., & Ciravegna, F. (2017). "SemRe-Rank: Improving Automatic Term Extraction By Incorporating Semantic Relatedness With Personalised PageRank". ACM Transactions on Knowledge Discovery from Data (TKDD).
+
+2. Frantzi, K., Ananiadou, S., & Mima, H. (2000). "Automatic recognition of multi-word terms: the C-value/NC-value method". International Journal on Digital Libraries.
+
 ## ライセンス
 
 このプロジェクトはMITライセンスの下で公開されています。
+
+---
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
