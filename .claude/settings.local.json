@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uvx:*)",
+      "Bash(dir:*)",
+      "Bash(python:*)",
+      "Bash(if [ -f \".env\" ])",
+      "Bash(then echo \".env file exists\")",
+      "Bash(else echo \".env file does not exist\")",
+      "Bash(fi)",
+      "Bash(streamlit run:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

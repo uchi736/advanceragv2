@@ -1,0 +1,202 @@
+[
+  {
+    "term": "アンモニア燃料",
+    "score": 0.8530838683244681,
+    "tfidf_score": 2.6094379124341005,
+    "cvalue_score": 19.848484848484848,
+    "frequency": 7,
+    "metadata": {
+      "seed_score": 0.9370359435676292
+    }
+  },
+  {
+    "term": "コモンレール式燃料噴射装置",
+    "score": 0.8150925610026574,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 7.614709844115208,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.5685493090062005
+    }
+  },
+  {
+    "term": "アンモニア燃料エンジン",
+    "score": 0.813359477723353,
+    "tfidf_score": 2.8971199848858813,
+    "cvalue_score": 13.186003849038471,
+    "frequency": 4,
+    "metadata": {
+      "seed_score": 0.7282015009377245
+    }
+  },
+  {
+    "term": "舶用ディーゼルエンジン",
+    "score": 0.7932553549836319,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 6.169925001442312,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.5175958282951411
+    }
+  },
+  {
+    "term": "ゼロエミッション船舶",
+    "score": 0.7894606809908679,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 5.918863237274595,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.5087415889786918
+    }
+  },
+  {
+    "term": "LNG燃料エンジン",
+    "score": 0.7853040859217859,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 5.643856189774724,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4990428671508338
+    }
+  },
+  {
+    "term": "MARPOL規制",
+    "score": 0.7807091832497065,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 5.339850002884624,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.48832142758264857
+    }
+  },
+  {
+    "term": "燃料噴射システム",
+    "score": 0.7807091832497065,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 5.339850002884624,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.48832142758264857
+    }
+  },
+  {
+    "term": "NOx削減技術",
+    "score": 0.7755725190839694,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 5.0,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.47633587786259546
+    }
+  },
+  {
+    "term": "排ガス再循環",
+    "score": 0.7697490495522756,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.614709844115208,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4627477822886432
+    }
+  },
+  {
+    "term": "水素燃料電池",
+    "score": 0.7697490495522756,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.614709844115208,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4627477822886432
+    }
+  },
+  {
+    "term": "NOx排出量",
+    "score": 0.7697490495522756,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.614709844115208,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4627477822886432
+    }
+  },
+  {
+    "term": "最大噴射圧力",
+    "score": 0.7697490495522756,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.614709844115208,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4627477822886432
+    }
+  },
+  {
+    "term": "環境対応技術",
+    "score": 0.7677830866803359,
+    "tfidf_score": 2.8971199848858813,
+    "cvalue_score": 10.170596158818652,
+    "frequency": 4,
+    "metadata": {
+      "seed_score": 0.6218565885040179
+    }
+  },
+  {
+    "term": "アンモニア燃料は、カーボンニュートラルな",
+    "score": 0.7653237986860838,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.321928094887363,
+    "frequency": 1,
+    "metadata": {
+      "seed_score": 0.4524221969341955
+    }
+  },
+  {
+    "term": "、アンモニア燃料は、カーボンニュートラル",
+    "score": 0.7642053166154068,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.247927513443585,
+    "frequency": 1,
+    "metadata": {
+      "seed_score": 0.44981240543594936
+    }
+  },
+  {
+    "term": "CO2排出量",
+    "score": 0.763026347350044,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.169925001442312,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4470614771501029
+    }
+  },
+  {
+    "term": "kWh以下",
+    "score": 0.763026347350044,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.169925001442312,
+    "frequency": 2,
+    "metadata": {
+      "seed_score": 0.4470614771501029
+    }
+  },
+  {
+    "term": "カーボンニュートラルな代替燃料とし",
+    "score": 0.763026347350044,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.169925001442312,
+    "frequency": 1,
+    "metadata": {
+      "seed_score": 0.4470614771501029
+    }
+  },
+  {
+    "term": "エンジンは、従来のディーゼルエンジン",
+    "score": 0.763026347350044,
+    "tfidf_score": 3.302585092994046,
+    "cvalue_score": 4.169925001442312,
+    "frequency": 1,
+    "metadata": {
+      "seed_score": 0.4470614771501029
+    }
+  }
+]
