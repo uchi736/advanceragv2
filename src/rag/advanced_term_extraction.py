@@ -35,7 +35,12 @@ class ExtractedTerm:
     cvalue_score: float = 0.0
     frequency: int = 0
     nested_terms: List[str] = field(default_factory=list)
-    synonyms: List[str] = field(default_factory=list)  # 類義語リスト
+
+    # 用語関係の3カテゴリ
+    synonyms: List[str] = field(default_factory=list)       # 類義語（LLM確定済み）
+    variants: List[str] = field(default_factory=list)       # 表記ゆれ
+    related_terms: List[str] = field(default_factory=list)  # 関連語（上位/下位語・共起語）
+
     definition: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -242,103 +247,105 @@ class AdvancedStatisticalExtractor:
 
         return True
 
-    def detect_synonyms(self, candidates: List[str], full_text: str) -> Dict[str, List[str]]:
+    def detect_variants(self, candidates: List[str]) -> Dict[str, List[str]]:
         """
-        候補用語から類義語・関連語を検出
+        表記ゆれ検出（編集距離ベース）
+
+        Args:
+            candidates: 候補用語リスト
+
+        Returns:
+            用語と表記ゆれのマッピング
+        """
+        variants = defaultdict(set)
+
+        for i, cand1 in enumerate(candidates):
+            for cand2 in candidates[i+1:]:
+                if len(cand1) >= 3 and len(cand2) >= 3:
+                    # Levenshtein比率で類似度計算
+                    similarity = SequenceMatcher(None, cand1, cand2).ratio()
+                    # 閾値: 0.75-0.98（完全一致1.0は除外）
+                    if 0.75 < similarity < 0.98:
+                        variants[cand1].add(cand2)
+                        variants[cand2].add(cand1)
+
+        return {k: list(v) for k, v in variants.items() if v}
+
+    def detect_related_terms(
+        self,
+        candidates: List[str],
+        full_text: str
+    ) -> Dict[str, List[str]]:
+        """
+        関連語検出（包含関係・PMI共起）
 
         Args:
             candidates: 候補用語リスト
             full_text: 全文テキスト
 
         Returns:
-            用語と類義語のマッピング
+            用語と関連語のマッピング
         """
-        synonyms = defaultdict(set)
+        related = defaultdict(set)
 
-        # テキストから名詞句を抽出（共起検出用）
-        noun_phrases = self._extract_noun_phrases(full_text)
-
-        # 1. 部分文字列関係の検出
+        # 1. 包含関係（上位語/下位語）
         for i, cand1 in enumerate(candidates):
             if len(cand1) < 2:
                 continue
             for cand2 in candidates[i+1:]:
                 if cand1 != cand2:
-                    if cand1 in cand2:
-                        synonyms[cand2].add(cand1)
-                    elif cand2 in cand1:
-                        synonyms[cand1].add(cand2)
+                    # 完全包含（短い方が長い方に含まれる）
+                    if cand1 in cand2 and len(cand2) > len(cand1) + 1:
+                        related[cand1].add(cand2)
+                        related[cand2].add(cand1)
+                    elif cand2 in cand1 and len(cand1) > len(cand2) + 1:
+                        related[cand2].add(cand1)
+                        related[cand1].add(cand2)
 
-        # 2. 共起関係の検出
-        cooccurrence_map = defaultdict(set)
-        for phrase in noun_phrases:
-            occurring_cands = [c for c in candidates if c in phrase]
-            for cand1 in occurring_cands:
-                for cand2 in occurring_cands:
-                    if cand1 != cand2:
-                        cooccurrence_map[cand1].add(cand2)
+        # 2. PMI共起分析（改善版：完全一致のみ）
+        cooccurrence_map = defaultdict(lambda: defaultdict(int))
+        window_size = 10
 
-        for cand, related in cooccurrence_map.items():
-            if len(related) >= 2:
-                synonyms[cand].update(related)
+        # Sudachiで形態素解析
+        tokens = self.tokenizer_obj.tokenize(full_text, self.sudachi_mode_a)
+        words = [token.surface() for token in tokens]
 
-        # 3. 編集距離による類似語検出
-        for i, cand1 in enumerate(candidates):
-            for cand2 in candidates[i+1:]:
-                if len(cand1) >= 3 and len(cand2) >= 3:
-                    similarity = SequenceMatcher(None, cand1, cand2).ratio()
-                    if 0.7 < similarity < 0.95:
-                        synonyms[cand1].add(cand2)
-                        synonyms[cand2].add(cand1)
+        # 候補用語の頻度カウント
+        word_freq = defaultdict(int)
+        for word in words:
+            if word in candidates:
+                word_freq[word] += 1
 
-        # 4. 語幹・語尾パターン検出
-        stem_groups = defaultdict(list)
-        suffixes = ['化', '的', '性', '型', '式', 'ー', 'ション', 'ング', 'メント']
+        # 共起カウント（完全一致のみ）
+        for i, word in enumerate(words):
+            if word in candidates:
+                window_start = max(0, i - window_size)
+                window_end = min(len(words), i + window_size + 1)
 
-        for cand in candidates:
-            for suffix in suffixes:
-                if cand.endswith(suffix):
-                    base = cand[:-len(suffix)]
-                    if len(base) >= 2:
-                        stem_groups[base].append(cand)
-                        for other_cand in candidates:
-                            if other_cand != cand and other_cand.startswith(base):
-                                synonyms[cand].add(other_cand)
+                for j in range(window_start, window_end):
+                    if i != j and words[j] in candidates:
+                        cooccurrence_map[word][words[j]] += 1
 
-        for group in stem_groups.values():
-            if len(group) > 1:
-                for word in group:
-                    synonyms[word].update(w for w in group if w != word)
+        # PMI（相互情報量）で共起の強さを評価
+        total_words = len(words)
+        cooccurrence_threshold = 3  # 最低3回共起
+        pmi_threshold = 2.0  # PMIスコア閾値
 
-        # 5. 略語パターンの検出
-        abbreviation_patterns = {
-            'RAG': 'Retrieval-Augmented Generation',
-            'LLM': '大規模言語モデル',
-            'API': 'アプリケーションプログラミングインターフェース',
-            'DB': 'データベース',
-            'QA': '質問応答',
-        }
+        for cand1, related_counts in cooccurrence_map.items():
+            for cand2, cooccur_count in related_counts.items():
+                if cooccur_count >= cooccurrence_threshold:
+                    # PMI計算: log2(P(x,y) / (P(x) * P(y)))
+                    p_xy = cooccur_count / total_words
+                    p_x = word_freq[cand1] / total_words
+                    p_y = word_freq[cand2] / total_words
 
-        for abbr, full_name in abbreviation_patterns.items():
-            if abbr in candidates and full_name in candidates:
-                synonyms[abbr].add(full_name)
-                synonyms[full_name].add(abbr)
+                    if p_x > 0 and p_y > 0:
+                        pmi = math.log2(p_xy / (p_x * p_y))
 
-        # 6. ドメイン固有の関連語
-        domain_relations = {
-            'ベクトル検索': ['vector search', 'ベクトルサーチ', 'ベクトルDB'],
-            'embedding': ['埋め込み', 'エンベディング', '埋め込み表現'],
-            'リランキング': ['re-ranking', 'リランク', '再順位付け'],
-        }
+                        if pmi >= pmi_threshold:
+                            related[cand1].add(cand2)
 
-        for main_term, related_terms in domain_relations.items():
-            if main_term in candidates:
-                for related in related_terms:
-                    if related in candidates:
-                        synonyms[main_term].add(related)
-                        synonyms[related].add(main_term)
-
-        return {k: list(v) for k, v in synonyms.items() if v}
+        return {k: list(v) for k, v in related.items() if v}
 
     def _extract_noun_phrases(self, text: str) -> List[str]:
         """名詞句を抽出（共起検出用）"""
@@ -856,6 +863,280 @@ class EnhancedTermExtractor:
 
             logger.warning(f"Failed to parse JSON: {text[:100]}...")
             return None
+
+    async def detect_semantic_synonyms_pgvector(
+        self,
+        candidates: List[str],
+        similarity_threshold: float = 0.85
+    ) -> Dict[str, List[str]]:
+        """
+        PGVectorで意味的類義語を検出（案2: 一括ベクトル比較）
+
+        Args:
+            candidates: 候補用語リスト
+            similarity_threshold: コサイン類似度の閾値
+
+        Returns:
+            用語と類義語候補のマッピング
+        """
+        if not self.embeddings or len(candidates) < 2:
+            logger.warning("Cannot detect synonyms: missing embeddings or insufficient candidates")
+            return {}
+
+        if not self.config or not hasattr(self.config, 'pgvector_connection_string'):
+            logger.warning("Cannot detect synonyms: missing PGVector connection string")
+            return {}
+
+        try:
+            from sqlalchemy import create_engine, text
+            from sqlalchemy.pool import NullPool
+
+            logger.info(f"Generating embeddings for {len(candidates)} candidates...")
+
+            # 1. embeddings一括取得
+            vectors = await self.embeddings.aembed_documents(candidates)
+
+            # 2. PostgreSQL接続
+            engine = create_engine(
+                self.config.pgvector_connection_string,
+                poolclass=NullPool
+            )
+
+            with engine.begin() as conn:
+                # 3. 既存の候補用語を削除（重複回避）
+                conn.execute(text("""
+                    DELETE FROM knowledge_nodes
+                    WHERE node_type = 'Term'
+                      AND term = ANY(:terms)
+                """), {'terms': candidates})
+
+                logger.info(f"Inserting {len(candidates)} terms into knowledge_nodes...")
+
+                # 4. 一括挿入
+                for term, vec in zip(candidates, vectors):
+                    vec_str = '[' + ','.join(map(str, vec)) + ']'
+                    # SQLAlchemyの名前付きパラメータ形式に統一
+                    conn.execute(text("""
+                        INSERT INTO knowledge_nodes (node_type, term, embedding)
+                        VALUES (:node_type, :term, cast(:embedding as vector))
+                    """), {
+                        'node_type': 'Term',
+                        'term': term,
+                        'embedding': vec_str
+                    })
+
+                # 5. PGVectorで全ペアの類似度を一括計算
+                logger.info(f"Computing similarities with threshold={similarity_threshold}...")
+
+                result = conn.execute(text("""
+                    WITH term_vectors AS (
+                        SELECT term, embedding
+                        FROM knowledge_nodes
+                        WHERE node_type = 'Term'
+                          AND term = ANY(:terms)
+                    )
+                    SELECT
+                        t1.term as term1,
+                        t2.term as term2,
+                        1 - (t1.embedding <=> t2.embedding) as similarity
+                    FROM term_vectors t1
+                    CROSS JOIN term_vectors t2
+                    WHERE t1.term < t2.term
+                      AND 1 - (t1.embedding <=> t2.embedding) >= :threshold
+                    ORDER BY similarity DESC
+                """), {
+                    'terms': candidates,
+                    'threshold': similarity_threshold
+                })
+
+                # 6. 対称的な辞書を構築
+                synonyms = defaultdict(set)
+                for row in result:
+                    synonyms[row.term1].add(row.term2)
+                    synonyms[row.term2].add(row.term1)
+
+                logger.info(f"Found {len(synonyms)} terms with semantic similarity candidates")
+
+                return {k: list(v) for k, v in synonyms.items()}
+
+        except Exception as e:
+            logger.error(f"Failed to detect semantic synonyms with PGVector: {e}")
+            return {}
+
+    async def validate_synonyms_with_llm(
+        self,
+        synonym_candidates: Dict[str, List[str]],
+        batch_size: int = 10
+    ) -> Dict[str, List[str]]:
+        """
+        LLMで類義語候補を最終判定（必須）
+
+        Args:
+            synonym_candidates: 類義語候補のマッピング
+            batch_size: バッチサイズ
+
+        Returns:
+            LLMで確定された類義語のマッピング
+        """
+        if not self.llm:
+            logger.error("LLM is required for synonym validation")
+            return {}
+
+        if not synonym_candidates:
+            logger.info("No synonym candidates to validate")
+            return {}
+
+        # 候補ペアをフラット化（重複排除）
+        pairs = []
+        seen = set()
+        for term1, candidates in synonym_candidates.items():
+            for term2 in candidates:
+                # 辞書順でペアを作成（重複排除）
+                pair = tuple(sorted([term1, term2]))
+                if pair not in seen:
+                    seen.add(pair)
+                    pairs.append(pair)
+
+        logger.info(f"Validating {len(pairs)} synonym pairs with LLM (batch_size={batch_size})...")
+
+        confirmed_synonyms = defaultdict(set)
+
+        # バッチ処理
+        for i in range(0, len(pairs), batch_size):
+            batch = pairs[i:i+batch_size]
+
+            try:
+                # LLMプロンプト作成
+                prompt = self._create_synonym_validation_prompt(batch)
+
+                # LLM実行
+                result_text = await self.llm.ainvoke(prompt)
+
+                # 応答をパース
+                result_text = result_text.content if hasattr(result_text, 'content') else str(result_text)
+                results = self._parse_synonym_validation_result(result_text, len(batch))
+
+                # 結果を反映
+                for (term1, term2), is_synonym in zip(batch, results):
+                    if is_synonym:
+                        confirmed_synonyms[term1].add(term2)
+                        confirmed_synonyms[term2].add(term1)
+                        logger.info(f"  [OK] 「{term1}」↔「{term2}」: 類義語")
+                    else:
+                        logger.info(f"  [NG] 「{term1}」↔「{term2}」: 非類義語")
+
+            except Exception as e:
+                logger.error(f"LLM validation batch processing failed: {e}")
+
+        logger.info(f"Confirmed {len(confirmed_synonyms)} terms with synonyms")
+
+        return {k: list(v) for k, v in confirmed_synonyms.items()}
+
+    def _create_synonym_validation_prompt(
+        self,
+        pairs: List[Tuple[str, str]]
+    ) -> str:
+        """LLM判定用プロンプト"""
+        pairs_text = '\n'.join([
+            f"{i+1}. 「{t1}」と「{t2}」"
+            for i, (t1, t2) in enumerate(pairs)
+        ])
+
+        return f"""以下の用語ペアが類義語（同じ意味を持つ語）かどうか判定してください。
+
+【用語ペア】
+{pairs_text}
+
+【判定基準】
+- 類義語: ほぼ同じ意味を持つ（例: 「データベース」と「DB」、「最適化」と「optimization」）
+- 非類義語: 関連はあるが意味が異なる（例: 「エンジン」と「ディーゼルエンジン」は上位語/下位語なので非類義語）
+
+【回答形式】
+各ペアについて、類義語なら1、非類義語なら0を返してください。
+形式: [1, 0, 1, ...]（カンマ区切りの数値リスト）
+
+回答:"""
+
+    def _parse_synonym_validation_result(
+        self,
+        result_text: str,
+        expected_length: int
+    ) -> List[bool]:
+        """LLM応答をパース"""
+        try:
+            # [1, 0, 1, ...] 形式を抽出
+            match = re.search(r'\[([0-9,\s]+)\]', result_text)
+            if match:
+                numbers_str = match.group(1)
+                numbers = [int(n.strip()) for n in numbers_str.split(',') if n.strip()]
+                if len(numbers) == expected_length:
+                    return [bool(n) for n in numbers]
+
+            # フォールバック: 0/1を順に抽出
+            numbers = re.findall(r'[01]', result_text)
+            if len(numbers) >= expected_length:
+                return [bool(int(n)) for n in numbers[:expected_length]]
+
+            logger.warning(f"Failed to parse LLM result, using all False: {result_text[:100]}")
+            return [False] * expected_length
+
+        except Exception as e:
+            logger.error(f"Error parsing LLM result: {e}")
+            return [False] * expected_length
+
+    async def classify_term_relationships(
+        self,
+        candidates: List[str],
+        full_text: str
+    ) -> Dict[str, Dict[str, List[str]]]:
+        """
+        用語関係を3カテゴリに分類
+
+        Args:
+            candidates: 候補用語リスト
+            full_text: 全文テキスト
+
+        Returns:
+            {
+                'term1': {
+                    'synonyms': [...],      # Phase 3+4で確定
+                    'variants': [...],      # Phase 2
+                    'related_terms': [...]  # Phase 2
+                }
+            }
+        """
+        result = defaultdict(lambda: {
+            'synonyms': [],
+            'variants': [],
+            'related_terms': []
+        })
+
+        # Phase 2: ヒューリスティック分類
+        logger.info("Phase 2: Heuristic classification...")
+        variants = self.statistical_extractor.detect_variants(candidates)
+        related = self.statistical_extractor.detect_related_terms(candidates, full_text)
+
+        # Phase 3: PGVector意味的類似度
+        logger.info("Phase 3: Semantic similarity with PGVector...")
+        synonym_candidates = await self.detect_semantic_synonyms_pgvector(
+            candidates,
+            similarity_threshold=0.85
+        )
+
+        # Phase 4: LLM最終判定（必須）
+        logger.info("Phase 4: LLM validation (required)...")
+        synonyms = await self.validate_synonyms_with_llm(synonym_candidates)
+
+        # 統合
+        for term in candidates:
+            if term in synonyms:
+                result[term]['synonyms'] = synonyms[term]
+            if term in variants:
+                result[term]['variants'] = variants[term]
+            if term in related:
+                result[term]['related_terms'] = related[term]
+
+        return dict(result)
 
 
 # テスト用のmain関数
