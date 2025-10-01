@@ -28,14 +28,24 @@
 
 ## 主な機能
 
-- **ハイブリッド検索**: ベクトル検索とキーワード検索を組み合わせ、Reciprocal Rank Fusion (RRF) によって検索精度を向上させます。
-- **日本語特化**: SudachiPyによる日本語形態素解析を使用し、日本語の文書処理に最適化されたハイブリッド検索を実現します。
-- **柔軟なベクトルストア**: PGVector (PostgreSQL) とChromaDBの両方をサポート。PostgreSQLが利用できない環境でもChromaDBで動作可能です。
-- **Text-to-SQL**: 自然言語のクエリを解析し、アップロードされたCSV/Excelファイルからのデータベースファイルに対して自動的にSQLクエリを生成します。
-- **専門用語辞書 (Golden-Retriever)**: アップロードから専門用語をその定義を抽出し、辞書を構築。この辞書を用いてクエリの理解を深め、よりコンテキストに沿った回答を生成します。
-- **複数のPDF処理エンジン**: PyMuPDF（高速）とAzure Document Intelligence（高精度）を選択可能。用途に応じて最適な処理方式を選択できます。
-- **評価システム**: Recall、Precision、MRR、nDCG、Hit Rateなどの指標でRAGシステムの検索精度を定量的に評価できます。
-- **ユーザーフレンドリーなUI**: タブ構成のインターフェース、メッセージ履歴、ドキュメント管理など、使いやすいストリームリットアプリケーションと洗練された設計です。
+### 🔍 検索・取得
+- **ハイブリッド検索**: ベクトル検索とキーワード検索を組み合わせ、Reciprocal Rank Fusion (RRF) によって検索精度を向上
+- **日本語特化**: SudachiPyによる日本語形態素解析、ハイブリッドMode（A+C）で最適化
+- **PGVector**: PostgreSQL + pgvectorによる高速ベクトル検索とSQLの統合
+
+### 📝 専門用語処理
+- **SemReRank**: Personalized PageRankで低頻度でも重要な用語を抽出
+- **ハイブリッド形態素解析**: Mode C（長単位）+ Mode A（短単位）+ n-gram
+- **6つの類義語検出**: 部分文字列、共起、編集距離、語幹、略語、ドメイン固有
+- **RAG定義生成**: ベクトル検索 + LLMによる高品質な定義の自動生成
+- **埋め込みキャッシュ**: pgvectorで再計算コストを削減
+
+### 🛠️ その他の機能
+- **Text-to-SQL**: 自然言語クエリを自動的にSQLに変換
+- **複数のPDF処理**: PyMuPDF（高速）とAzure Document Intelligence（高精度）
+- **評価システム**: Recall、Precision、MRR、nDCG、Hit Rateなどの定量評価
+- **ナレッジグラフ**: 用語間の関連性を可視化・探索
+- **直感的なUI**: Streamlitベースのタブ構成インターフェース
 
 ## システム構成
 
@@ -103,23 +113,29 @@
     ```
 
 3. **環境変数の設定**:
-    `.env.example` ファイルをコピーして `.env` ファイルを作成し、以下の設定を記入してください。最低限、以下の設定が必要です。
-    - `AZURE_OPENAI_API_KEY`
-    - `AZURE_OPENAI_ENDPOINT`
-    - `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`
-    - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME`
+    `.env.example` ファイルをコピーして `.env` ファイルを作成し、以下の設定を記入してください。
 
-    **ベクトルストア設定**:
-    - `VECTOR_STORE_TYPE`: "pgvector" | "chromadb" (デフォルト: "pgvector")
+    **必須設定（Azure OpenAI）**:
+    - `AZURE_OPENAI_API_KEY`: Azure OpenAIのAPIキー
+    - `AZURE_OPENAI_ENDPOINT`: エンドポイントURL
+    - `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME`: チャットモデルのデプロイ名
+    - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME`: 埋め込みモデルのデプロイ名
 
-    PGVector使用時:
-    - `PG_URL` (PostgreSQLの接続URL) または `DB_*` の各項目
-    - PostgreSQLにpgvector拡張が必要
+    **PostgreSQL + pgvector設定**:
+    - `PG_URL`: PostgreSQLの接続URL、または以下の個別設定
+      - `DB_HOST`: ホスト名
+      - `DB_PORT`: ポート番号（デフォルト: 5432）
+      - `DB_NAME`: データベース名
+      - `DB_USER`: ユーザー名
+      - `DB_PASSWORD`: パスワード
+    - **注意**: PostgreSQLにpgvector拡張のインストールが必要です
 
-    ChromaDB使用時:
-    - `CHROMA_PERSIST_DIRECTORY`: ローカルストレージパス (デフォルト: "./chroma_db")
-    - `CHROMA_SERVER_HOST`: ChromaDBサーバーホスト（オプション）
-    - `CHROMA_SERVER_PORT`: ChromaDBサーバーポート（オプション）
+    **SemReRank設定（オプション）**:
+    - `SEMRERANK_ENABLED`: SemReRankを有効化（デフォルト: true）
+    - `SEMRERANK_SEED_PERCENTILE`: シード選定の上位パーセンタイル（デフォルト: 15.0）
+    - `SEMRERANK_RELMIN`: 最小類似度閾値（デフォルト: 0.5）
+    - `SEMRERANK_RELTOP`: 上位関連語の割合（デフォルト: 0.15）
+    - `DEFINITION_GENERATION_PERCENTILE`: 定義生成の上位パーセンタイル（デフォルト: 15.0）
 
     **PDF処理方式の設定（オプション）**:
     - `PDF_PROCESSOR_TYPE`: "legacy" | "pymupdf" | "azure_di" (デフォルト: "legacy")
@@ -138,22 +154,16 @@
 streamlit run app.py
 ```
 
-### ベクトルストアの切り替え
+### PostgreSQL + pgvector のセットアップ
 
-PostgreSQLが使用できない環境でChromaDBを使用する場合：
+pgvector拡張を有効化してください：
 
-1. **環境変数の更新**: `.env`ファイルで`VECTOR_STORE_TYPE=chromadb`を設定
-
-2. **自動切り替えスクリプト**:
-```bash
-python scripts/vector_store_migration.py chromadb
+```sql
+-- PostgreSQLで実行
+CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-3. **手動切り替え**: `.env`ファイルを直接編集してアプリケーションを再起動
-
-**注意**: ベクトルストアを切り替えた後は、ドキュメントを再インデックス化する必要があります。
-
-詳細は [docs/vector-store-configuration.md](docs/vector-store-configuration.md) を参照してください。
+SemReRank用の埋め込みキャッシュテーブルは自動的に作成されます。
 
 ### PDF処理方式の選択
 
@@ -351,13 +361,17 @@ graph TB
 
 - **フロントエンド**: Streamlit
 - **バックエンド**: Python 3.9+
-- **ベクトルデータベース**:
-  - PostgreSQL + pgvector (デフォルト)
-  - ChromaDB (代替オプション)
-- **言語モデル**: Azure OpenAI (GPT-4o, text-embedding-ada-002)
-- **日本語処理**: SudachiPy
+- **ベクトルデータベース**: PostgreSQL + pgvector
+- **言語モデル**: Azure OpenAI
+  - GPT-4o: チャット・定義生成・専門用語判定
+  - text-embedding-3-small: 埋め込み生成（1536次元）
+- **日本語処理**: SudachiPy（ハイブリッドMode A + C）
 - **検索エンジン**: LangChain + カスタムハイブリッドリトリーバー
-- **PDF処理**: 
+- **専門用語抽出**:
+  - TF-IDF + C-value
+  - SemReRank (Personalized PageRank)
+  - 6つの類義語検出手法
+- **PDF処理**:
   - PyMuPDF (fitz): 高速・軽量処理
   - Azure Document Intelligence: 高精度レイアウト解析・Markdown出力
 
