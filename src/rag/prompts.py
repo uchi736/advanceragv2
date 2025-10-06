@@ -272,11 +272,11 @@ TECHNICAL_TERM_JUDGMENT_SYSTEM_PROMPT = """あなたは専門用語判定の専�
 
 **出力形式:**
 ```json
-{
+{{
   "is_technical": true/false,
   "confidence": 0.0-1.0,
   "reason": "判定理由（簡潔に）"
-}
+}}
 ```
 """
 

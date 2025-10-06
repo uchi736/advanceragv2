@@ -93,21 +93,21 @@ class AzureDocumentIntelligenceProcessor(BasePDFProcessor):
         try:
             from azure.ai.documentintelligence.models import (
                 AnalyzeDocumentRequest,
-                ContentFormat,
+                DocumentContentFormat,
                 AnalyzeResult,
             )
-            
+
             logger.info(f"Processing PDF with Azure Document Intelligence: {file_path}")
-            
+
             # ファイルを読み込み
             with open(file_path, "rb") as f:
                 file_content = f.read()
-            
+
             # Azure Document Intelligence で解析
             poller = self.client.begin_analyze_document(
                 self.model,
                 AnalyzeDocumentRequest(bytes_source=file_content),
-                output_content_format=ContentFormat.MARKDOWN,
+                output_content_format=DocumentContentFormat.MARKDOWN,
             )
             
             result: AnalyzeResult = poller.result()
@@ -174,16 +174,25 @@ class AzureDocumentIntelligenceProcessor(BasePDFProcessor):
     def _extract_table_data(self, table) -> List[List[str]]:
         """
         Azure Document Intelligenceのテーブルオブジェクトからデータを抽出
-        
+
         Args:
             table: Azure Document Intelligenceのテーブルオブジェクト
-            
+
         Returns:
             テーブルデータ（行と列のリスト）
         """
         if not hasattr(table, 'cells'):
             return []
-        
+
+        # row_count/column_countのNullチェック
+        if not hasattr(table, 'row_count') or table.row_count is None:
+            logger.warning(f"Table has no row_count, skipping table extraction")
+            return []
+
+        if not hasattr(table, 'column_count') or table.column_count is None:
+            logger.warning(f"Table has no column_count, skipping table extraction")
+            return []
+
         # テーブルの行列を初期化
         rows = [['' for _ in range(table.column_count)] for _ in range(table.row_count)]
         
@@ -191,12 +200,18 @@ class AzureDocumentIntelligenceProcessor(BasePDFProcessor):
         for cell in table.cells:
             row_idx = cell.row_index
             col_idx = cell.column_index
+
+            # row_index/column_indexのNullチェック
+            if row_idx is None or col_idx is None:
+                logger.warning(f"Cell has None index (row: {row_idx}, col: {col_idx}), skipping cell")
+                continue
+
             content = cell.content if hasattr(cell, 'content') else ''
-            
-            # セルの範囲を考慮
-            row_span = cell.row_span if hasattr(cell, 'row_span') else 1
-            col_span = cell.column_span if hasattr(cell, 'column_span') else 1
-            
+
+            # セルの範囲を考慮（Noneチェック追加）
+            row_span = cell.row_span if hasattr(cell, 'row_span') and cell.row_span is not None else 1
+            col_span = cell.column_span if hasattr(cell, 'column_span') and cell.column_span is not None else 1
+
             # セルの内容を適切な位置に配置
             for r in range(row_span):
                 for c in range(col_span):

@@ -1,6 +1,10 @@
 import streamlit as st
 import pandas as pd
+import tempfile
+import shutil
+from pathlib import Path
 from datetime import datetime
+from sqlalchemy import text
 from src.rag.term_extraction import JargonDictionaryManager
 from src.rag.config import Config
 from src.utils.helpers import render_term_card
@@ -8,6 +12,34 @@ from src.utils.helpers import render_term_card
 @st.cache_data(ttl=60, show_spinner=False)
 def get_all_terms_cached(_jargon_manager):
     return pd.DataFrame(_jargon_manager.get_all_terms())
+
+def check_vector_store_has_data(rag_system):
+    """Check if vector store or document chunks have any data."""
+    try:
+        if not rag_system or not hasattr(rag_system, 'engine'):
+            return False
+
+        with rag_system.engine.connect() as conn:
+            # Check vector store (langchain_pg_embedding)
+            try:
+                result = conn.execute(text("SELECT COUNT(*) FROM langchain_pg_embedding"))
+                vector_count = result.scalar()
+            except:
+                vector_count = 0
+
+            # Check keyword search chunks (document_chunks)
+            try:
+                result = conn.execute(text("SELECT COUNT(*) FROM document_chunks"))
+                chunk_count = result.scalar()
+            except:
+                chunk_count = 0
+
+            # Return True if either table has data
+            return vector_count > 0 or chunk_count > 0
+    except Exception as e:
+        import logging
+        logging.error(f"Error checking vector store: {e}")
+        return False
 
 def render_dictionary_tab(rag_system):
     """Renders the dictionary tab."""
@@ -76,7 +108,251 @@ def render_dictionary_tab(rag_system):
         all_terms_df = get_all_terms_cached(jargon_manager)
 
     if all_terms_df.empty:
-        st.info("まだ用語が登録されていません。サイドバーの「📚 用語辞書生成」から用語を抽出してください。")
+        st.info("まだ用語が登録されていません。以下の手順で用語を生成してください。")
+
+        # 用語生成UI
+        st.markdown("### 📚 用語辞書を生成")
+
+        # Check vector store status
+        has_vector_data = check_vector_store_has_data(rag_system)
+        if not has_vector_data:
+            st.warning("⚠️ ベクトルストアにドキュメントが登録されていません。")
+            st.info("""
+💡 **事前準備が必要です**:
+1. 「**ドキュメント**」タブでPDFをアップロード・登録
+2. このタブに戻って用語を生成
+
+定義生成とLLM判定を有効にするには、ドキュメント登録が必須です。
+            """)
+            return
+        else:
+            st.success("✅ ベクトルストアにドキュメントが登録されています。用語生成の準備が整いました。")
+
+        st.markdown("""
+**📚 用語辞書生成の流れ**:
+1. PDFから候補用語を抽出 (Sudachi形態素解析 + SemReRank)
+2. ベクトルストアで類似ドキュメント検索 → 定義生成
+3. LLMで専門用語を判定・フィルタ
+        """)
+
+        # Input mode selection
+        input_mode = st.radio(
+            "入力ソース",
+            ("登録済みドキュメントから抽出", "新規ファイルをアップロード"),
+            horizontal=True,
+            key="term_input_mode"
+        )
+
+        uploaded_files = None
+        input_dir = ""
+        if input_mode == "登録済みドキュメントから抽出":
+            st.info("登録済みの全ドキュメントから用語を抽出します。")
+            input_dir = "./docs"  # Placeholder, will use vector store docs
+        else:
+            uploaded_files = st.file_uploader(
+                "用語抽出用のファイルをアップロード (PDF推奨)",
+                accept_multiple_files=True,
+                type=["pdf", "txt", "md"],
+                key="term_input_files"
+            )
+
+        output_json = st.text_input(
+            "出力先 (JSON)",
+            value="./output/terms.json",
+            key="term_output_json"
+        )
+
+        if st.button("🚀 用語を抽出・生成", type="primary", use_container_width=True, key="run_term_extraction"):
+            if not hasattr(rag_system, 'jargon_manager') or rag_system.jargon_manager is None:
+                st.error("用語辞書機能は現在利用できません。")
+            else:
+                temp_dir_path = None
+                try:
+                    if input_mode == "登録済みドキュメントから抽出":
+                        # Extract text from registered documents in database
+                        with rag_system.engine.connect() as conn:
+                            result = conn.execute(text("""
+                                SELECT content
+                                FROM document_chunks
+                                ORDER BY created_at
+                            """))
+                            all_chunks = [row[0] for row in result]
+
+                        if not all_chunks:
+                            st.error("登録済みドキュメントが見つかりません。")
+                            return
+
+                        # Create temporary file with all content
+                        temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_registered_"))
+                        temp_file = temp_dir_path / "registered_documents.txt"
+
+                        # Write all chunks to file
+                        with open(temp_file, "w", encoding="utf-8") as f:
+                            f.write("\n\n".join(all_chunks))
+
+                        input_path = str(temp_dir_path)
+                        st.info(f"登録済みドキュメントから {len(all_chunks)} チャンクを抽出しました。")
+                    else:
+                        if not uploaded_files:
+                            st.error("抽出するファイルをアップロードしてください。")
+                            return
+                        temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_"))
+                        for uploaded in uploaded_files:
+                            target = temp_dir_path / uploaded.name
+                            with open(target, "wb") as f:
+                                f.write(uploaded.getbuffer())
+                        input_path = str(temp_dir_path)
+
+                    output_path = Path(output_json)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    with st.spinner("用語抽出中... (SemReRank + 定義生成 + LLM判定)"):
+                        rag_system.extract_terms(input_path, str(output_path))
+
+                    # セッションステートに結果を保存（リロードを防ぐ）
+                    st.session_state['term_extraction_completed'] = True
+                    st.session_state['term_extraction_output'] = str(output_path)
+
+                    st.success(f"✅ 用語辞書を生成しました → {output_path}")
+                    st.balloons()
+                    get_all_terms_cached.clear()
+
+                except Exception as e:
+                    st.error(f"用語抽出エラー: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                finally:
+                    if temp_dir_path and temp_dir_path.exists():
+                        shutil.rmtree(temp_dir_path, ignore_errors=True)
+
+        # 用語抽出完了後の表示
+        if st.session_state.get('term_extraction_completed', False):
+            output_file = st.session_state.get('term_extraction_output', '')
+            if output_file and Path(output_file).exists():
+                st.markdown("---")
+                with st.expander("📊 抽出結果のプレビュー", expanded=True):
+                    import json
+                    try:
+                        with open(output_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            terms = data.get('terms', [])
+
+                        st.success(f"✅ {len(terms)}件の用語を抽出しました")
+
+                        # 上位10件を表示
+                        st.markdown("**上位10件の用語:**")
+                        for i, term in enumerate(terms[:10], 1):
+                            with st.container():
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    st.markdown(f"**{i}. {term['headword']}**")
+                                    if term.get('definition'):
+                                        st.caption(term['definition'][:100] + "..." if len(term['definition']) > 100 else term['definition'])
+                                with col2:
+                                    st.metric("スコア", f"{term.get('score', 0):.3f}")
+                                    st.caption(f"頻度: {term.get('frequency', 0)}")
+
+                        if st.button("✨ プレビューを閉じる", key="close_preview"):
+                            st.session_state['term_extraction_completed'] = False
+                            st.rerun()
+
+                    except Exception as e:
+                        st.error(f"結果ファイルの読み込みエラー: {e}")
+
+        # ナレッジグラフ構築セクション
+        st.markdown("---")
+        st.markdown("#### 🕸️ ナレッジグラフ構築")
+        st.caption("抽出した用語からナレッジグラフを構築します。グラフエクスプローラーで可視化できます。")
+
+        # 用語ファイルとクラスタファイルの確認
+        # output_jsonから用語ファイルパスを取得
+        terms_file = Path(output_json) if output_json else Path("./output/terms.json")
+        clustering_file = Path("output/term_clusters.json")
+
+        files_exist = terms_file.exists() and clustering_file.exists()
+
+        if not files_exist:
+            st.warning("⚠️ 必要なファイルが見つかりません")
+            if not terms_file.exists():
+                st.info(f"📄 用語ファイルがありません: {terms_file}")
+            if not clustering_file.exists():
+                st.info("📄 クラスタファイルがありません: output/term_clusters.json")
+            st.info("💡 上記の「用語生成」を実行してから、ナレッジグラフを構築してください")
+        else:
+            st.success(f"✅ 用語ファイル: {terms_file.name}")
+            st.success(f"✅ クラスタファイル: {clustering_file.name}")
+
+            if st.button("🚀 ナレッジグラフを構築", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("ナレッジグラフ構築中..."):
+                        from src.scripts.knowledge_graph.graph_builder import (
+                            KnowledgeGraphDB,
+                            build_nodes_from_terms,
+                            build_category_nodes_from_clusters,
+                            build_hierarchy_from_clustering,
+                            build_similarity_from_clusters,
+                            build_term_category_relationships,
+                            load_terms_from_json,
+                            load_clustering_results
+                        )
+
+                        # ファイル読み込み
+                        terms = load_terms_from_json(str(terms_file))
+                        clustering_results = load_clustering_results(str(clustering_file))
+
+                        st.info(f"📊 読み込み: {len(terms)}件の用語、{len(clustering_results.get('categories', {}))}個のカテゴリ")
+
+                        # グラフ構築
+                        config = Config()
+                        pg_url = f"host={config.db_host} port={config.db_port} dbname={config.db_name} user={config.db_user} password={config.db_password}"
+
+                        with KnowledgeGraphDB(pg_url) as db:
+                            # 1. ノード作成
+                            progress_text = st.empty()
+                            progress_text.text("1/5: 用語ノード作成中...")
+                            term_to_id = build_nodes_from_terms(db, terms)
+
+                            # 2. カテゴリノード作成
+                            progress_text.text("2/5: カテゴリノード作成中...")
+                            category_to_id = build_category_nodes_from_clusters(db, clustering_results)
+
+                            # 3. 階層関係構築
+                            progress_text.text("3/5: 階層関係構築中...")
+                            hierarchy_edges = build_hierarchy_from_clustering(db, clustering_results, term_to_id)
+
+                            # 4. 類似関係構築
+                            progress_text.text("4/5: 類似関係構築中...")
+                            similarity_edges = build_similarity_from_clusters(db, clustering_results, term_to_id)
+
+                            # 5. カテゴリ関係構築
+                            progress_text.text("5/5: カテゴリ関係構築中...")
+                            category_edges = build_term_category_relationships(
+                                db, clustering_results, term_to_id, category_to_id
+                            )
+
+                            progress_text.empty()
+
+                        # 結果表示
+                        st.success("✅ ナレッジグラフ構築完了！")
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("用語ノード", f"{len(term_to_id):,}")
+                            st.metric("カテゴリノード", f"{len(category_to_id):,}")
+                        with col2:
+                            st.metric("階層エッジ", f"{hierarchy_edges:,}")
+                            st.metric("類似エッジ", f"{similarity_edges:,}")
+                            st.metric("カテゴリエッジ", f"{category_edges:,}")
+
+                        total_edges = hierarchy_edges + similarity_edges + category_edges
+                        st.info(f"📊 総エッジ数: {total_edges:,}")
+                        st.info("💡 「グラフ」タブでナレッジグラフを可視化できます")
+
+                except Exception as e:
+                    st.error(f"ナレッジグラフ構築エラー: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
         return
 
     # Filter terms

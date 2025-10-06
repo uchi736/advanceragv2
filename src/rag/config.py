@@ -118,7 +118,7 @@ class Config:
     semrerank_alpha: float = float(os.getenv("SEMRERANK_ALPHA", 0.85))  # PageRankダンピング係数
 
     # RAG definition generation settings
-    definition_generation_percentile: float = float(os.getenv("DEFINITION_GENERATION_PERCENTILE", 15.0))  # 上位15%に定義生成
+    definition_generation_percentile: float = float(os.getenv("DEFINITION_GENERATION_PERCENTILE", 50.0))  # 上位50%に定義生成
 
     # LLM filter settings
     llm_filter_batch_size: int = int(os.getenv("LLM_FILTER_BATCH_SIZE", 10))

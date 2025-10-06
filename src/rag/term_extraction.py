@@ -505,14 +505,36 @@ class TermExtractor:
             tfidf_scores, cvalue_scores, stage="final"  # Stage B: 最終スコア用（TF-IDF重視）
         )
 
+        # 3.5. SemReRank用に上位候補に絞る（計算コスト削減）
+        MAX_SEMRERANK_CANDIDATES = 50
+        if self.semrerank and len(candidates) > MAX_SEMRERANK_CANDIDATES:
+            # seed_scoresでソートして上位を選択
+            top_candidates = sorted(seed_scores.items(), key=lambda x: x[1], reverse=True)[:MAX_SEMRERANK_CANDIDATES]
+            top_candidate_terms = [term for term, _ in top_candidates]
+
+            # 絞り込んだ候補でスコアを再構築
+            filtered_candidates = {term: candidates[term] for term in top_candidate_terms}
+            filtered_seed_scores = {term: seed_scores[term] for term in top_candidate_terms}
+            filtered_base_scores = {term: base_scores[term] for term in top_candidate_terms}
+
+            logger.info(f"Reduced candidates from {len(candidates)} to {len(filtered_candidates)} for SemReRank")
+
+            candidates_for_semrerank = filtered_candidates
+            seed_scores_for_semrerank = filtered_seed_scores
+            base_scores_for_semrerank = filtered_base_scores
+        else:
+            candidates_for_semrerank = candidates
+            seed_scores_for_semrerank = seed_scores
+            base_scores_for_semrerank = base_scores
+
         # 4. SemReRank適用（オプション）
         if self.semrerank:
             logger.info("Applying SemReRank enhancement")
             try:
                 enhanced_scores = self.semrerank.enhance_scores(
-                    candidates=list(candidates.keys()),
-                    base_scores=base_scores,
-                    seed_scores=seed_scores
+                    candidates=list(candidates_for_semrerank.keys()),
+                    base_scores=base_scores_for_semrerank,
+                    seed_scores=seed_scores_for_semrerank
                 )
             except Exception as e:
                 logger.error(f"SemReRank failed: {e}. Using base scores.")
@@ -523,9 +545,8 @@ class TermExtractor:
 
         # 5. 類義語検出
         logger.info("Detecting synonyms")
-        synonym_map = self.statistical_extractor.detect_synonyms(
-            candidates=list(candidates.keys()),
-            full_text=full_text
+        synonym_map = self.statistical_extractor.detect_variants(
+            candidates=list(candidates_for_semrerank.keys())
         )
         logger.info(f"Detected synonyms for {len(synonym_map)} terms")
 

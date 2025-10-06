@@ -27,7 +27,6 @@ try:
     from src.ui.sidebar import render_sidebar, render_langsmith_info
     from src.ui.chat_tab import render_chat_tab
     from src.ui.dictionary_tab import render_dictionary_tab
-    from src.ui.data_tab import render_data_tab
     from src.ui.documents_tab import render_documents_tab
     from src.ui.settings_tab import render_settings_tab
     from src.ui.evaluation_tab import render_evaluation_tab
@@ -74,8 +73,7 @@ def main():
     """, unsafe_allow_html=True)
 
     # ── Main Tabs ──────────────────────────────────────────────────────────
-    # All tabs are available with PGVector
-    tab_titles = ["💬 Chat", "📖 Dictionary", "🗃️ Data", "📁 Documents", "🎯 Evaluation", "🔗 Graph", "⚙️ Settings"]
+    tab_titles = ["💬 Chat", "📖 Dictionary", "📁 Documents", "🎯 Evaluation", "🔗 Graph", "⚙️ Settings"]
     tabs = st.tabs(tab_titles)
 
     with tabs[0]:
@@ -85,18 +83,15 @@ def main():
         render_dictionary_tab(rag)
 
     with tabs[2]:
-        render_data_tab(rag)
-
-    with tabs[3]:
         render_documents_tab(rag)
 
-    with tabs[4]:
+    with tabs[3]:
         render_evaluation_tab(rag)
 
-    with tabs[5]:
+    with tabs[4]:
         render_graph_explorer()
 
-    with tabs[6]:
+    with tabs[5]:
         render_settings_tab(rag, ENV_DEFAULTS)
 
 if __name__ == "__main__":

@@ -1,83 +1,24 @@
 import streamlit as st
 import os
-import time
-import tempfile
-import shutil
-from pathlib import Path
-from src.core.rag_system import Config
+from sqlalchemy import text
+
+def check_vector_store_has_data(rag_system):
+    """Check if vector store has any documents."""
+    try:
+        if not rag_system or not hasattr(rag_system, 'engine'):
+            return False
+        with rag_system.engine.connect() as conn:
+            result = conn.execute(text(
+                "SELECT COUNT(*) FROM langchain_pg_embedding"
+            ))
+            count = result.scalar()
+            return count > 0
+    except:
+        # If table doesn't exist or any error, assume no data
+        return False
 
 def render_sidebar(rag_system, env_defaults):
     """Renders the sidebar and handles configuration updates."""
-    # Term Dictionary Extraction
-    with st.sidebar.expander("📚 用語辞書生成", expanded=False):
-        # Check if jargon features are available
-        if rag_system and (not hasattr(rag_system, 'jargon_manager') or rag_system.jargon_manager is None):
-            st.warning("⚠️ 用語辞書機能は現在利用できません。")
-        else:
-            if rag_system and hasattr(rag_system, 'config') and rag_system.config.vector_store_type == "chromadb":
-                st.markdown("専門用語・類義語辞書を ChromaDB に保存します。")
-            else:
-                st.markdown("専門用語・類義語辞書を PostgreSQL + pgvector に保存します。")
-
-        input_mode = st.radio(
-            "入力タイプ",
-            ("フォルダ指定", "ファイルアップロード"),
-            horizontal=True,
-            key="term_input_mode"
-        )
-
-        uploaded_files = None
-        input_dir = ""
-        if input_mode == "フォルダ指定":
-            input_dir = st.text_input("入力フォルダ", value="./docs", key="term_input_dir")
-        else:
-            uploaded_files = st.file_uploader(
-                "入力ファイル (複数可)",
-                accept_multiple_files=True,
-                key="term_input_files"
-            )
-
-        output_json = st.text_input("出力 JSON パス", value="./output/terms.json", key="term_output_json")
-
-        if st.button("🚀 抽出実行", key="run_term_dict"):
-            if rag_system is None:
-                st.error("RAGシステムが初期化されていません。")
-            elif not hasattr(rag_system, 'jargon_manager') or rag_system.jargon_manager is None:
-                st.error("用語辞書機能は現在利用できません。")
-            else:
-                temp_dir_path = None
-                try:
-                    if input_mode == "フォルダ指定":
-                        input_path = (input_dir or "").strip()
-                        if not input_path:
-                            st.error("入力フォルダを指定してください。")
-                            raise ValueError("input_dir_not_set")
-                    else:
-                        if not uploaded_files:
-                            st.error("抽出するファイルをアップロードしてください。")
-                            raise ValueError("no_files_uploaded")
-                        temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_"))
-                        for uploaded in uploaded_files:
-                            target = temp_dir_path / uploaded.name
-                            with open(target, "wb") as f:
-                                f.write(uploaded.getbuffer())
-                        input_path = str(temp_dir_path)
-
-                    output_path = Path(output_json)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    with st.spinner("用語抽出中..."):
-                        rag_system.extract_terms(input_path, str(output_path))
-                    st.success(f"辞書を生成しました ✔️ → {output_path}")
-                except ValueError:
-                    # エラーメッセージは既に表示済み
-                    pass
-                except Exception as e:
-                    st.error(f"用語抽出エラー: {e}")
-                finally:
-                    if temp_dir_path and temp_dir_path.exists():
-                        shutil.rmtree(temp_dir_path, ignore_errors=True)
-
     with st.sidebar:
         st.markdown("<h2 style='color: var(--text-primary);'>⚙️ Configuration</h2>", unsafe_allow_html=True)
         if rag_system:

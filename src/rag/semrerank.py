@@ -149,7 +149,7 @@ class EmbeddingCache:
                 conn.execute(
                     text(f"""
                         INSERT INTO {self.cache_table} (term, embedding)
-                        VALUES (:term, :embedding::vector)
+                        VALUES (:term, CAST(:embedding AS vector))
                         ON CONFLICT (term) DO UPDATE
                         SET embedding = EXCLUDED.embedding,
                             created_at = CURRENT_TIMESTAMP

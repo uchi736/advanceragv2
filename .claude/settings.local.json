@@ -8,7 +8,18 @@
       "Bash(then echo \".env file exists\")",
       "Bash(else echo \".env file does not exist\")",
       "Bash(fi)",
-      "Bash(streamlit run:*)"
+      "Bash(streamlit run:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nUpdate README.md with latest SemReRank implementation\n\n- Add SemReRank feature highlights\n- Update term extraction pipeline documentation\n- Add reference to comprehensive processing logic docs\n- Include academic references\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(myenv/Scripts/python.exe test_term_extraction.py:*)",
+      "Bash(myenv/Scripts/python.exe test_improved_extraction.py:*)",
+      "Bash(rm:*)",
+      "Bash(myenv/Scripts/python.exe test_50percent.py:*)",
+      "Bash(myenv/Scripts/python.exe test_more_terms.py:*)",
+      "Bash(myenv/Scripts/python.exe test_semrerank_effect.py:*)",
+      "Bash(myenv/Scripts/python.exe analyze_semrerank.py:*)",
+      "Bash(myenv/Scripts/python.exe -c \"from sqlalchemy import create_engine, text; from src.core.rag_system import Config; config = Config(); engine = create_engine(f''postgresql://{config.db_user}:{config.db_password}@{config.db_host}:{config.db_port}/{config.db_name}''); conn = engine.connect(); result = conn.execute(text(''SELECT COUNT(*) FROM knowledge_nodes'')); print(f''knowledge_nodes: {result.scalar()} rows''); result = conn.execute(text(''SELECT COUNT(*) FROM knowledge_edges'')); print(f''knowledge_edges: {result.scalar()} rows''); result = conn.execute(text(''SELECT COUNT(*) FROM jargon_dictionary'')); print(f''jargon_dictionary: {result.scalar()} rows''); conn.close()\")"
     ],
     "deny": [],
     "ask": []

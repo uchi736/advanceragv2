@@ -130,19 +130,6 @@ class RAGSystem:
             # Enable pgvector extension
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
-            # Get embedding dimension
-            embedding_dimension = len(self.embeddings.embed_query("test"))
-
-            # Create embedding column
-            conn.execute(text(f"""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'langchain_pg_embedding'::regclass AND attname = 'embedding') THEN
-                        ALTER TABLE langchain_pg_embedding ADD COLUMN embedding vector({embedding_dimension});
-                    END IF;
-                END $$;
-            """))
-
             # Create table for keyword search
             conn.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS document_chunks (
@@ -180,6 +167,45 @@ class RAGSystem:
         if not self.jargon_manager:
             return 0, 0
         return self.jargon_manager.delete_terms(terms)
+
+    def delete_document_by_id(self, doc_id: str) -> tuple[bool, str]:
+        """Delete a document by its ID.
+
+        Args:
+            doc_id: Document ID to delete
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        if not hasattr(self, 'ingestion_handler') or self.ingestion_handler is None:
+            return False, "Ingestion handler not available"
+
+        return self.ingestion_handler.delete_document_by_id(doc_id)
+
+    def ingest_documents(self, paths: List[str]) -> None:
+        """Ingest documents into the vector store.
+
+        Args:
+            paths: List of file paths to ingest
+        """
+        if not hasattr(self, 'ingestion_handler') or self.ingestion_handler is None:
+            raise ValueError("Ingestion handler not available")
+
+        self.ingestion_handler.ingest_documents(paths)
+
+    def get_chunks_by_document_id(self, doc_id: str):
+        """Get chunks for a specific document ID.
+
+        Args:
+            doc_id: Document ID to get chunks for
+
+        Returns:
+            DataFrame with chunk information
+        """
+        if not hasattr(self, 'sql_handler') or self.sql_handler is None:
+            raise ValueError("SQL handler not available")
+
+        return self.sql_handler.get_chunks_by_document_id(doc_id)
 
     # --- Core Query Logic ---
     def query(self, question: str, search_type: str = None) -> Dict[str, Any]:

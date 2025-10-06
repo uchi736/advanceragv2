@@ -19,9 +19,7 @@ from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-import numpy as np
 from sudachipy import tokenizer, dictionary
-from sklearn.feature_extraction.text import TfidfVectorizer
 
 logger = logging.getLogger(__name__)
 
@@ -78,18 +76,85 @@ class AdvancedStatisticalExtractor:
         # 専門用語パターン（正規表現）
         self.term_patterns = self._compile_term_patterns()
 
+        # Sudachi制限: 49149バイト
+        self.max_tokenize_bytes = 49000  # 安全マージン
+
+    def _safe_tokenize(self, text: str, mode):
+        """大きなテキストを安全にトークン化（Sudachi制限回避）"""
+        text_bytes = text.encode('utf-8')
+
+        # 制限以下ならそのまま処理
+        if len(text_bytes) <= self.max_tokenize_bytes:
+            return self.tokenizer_obj.tokenize(text, mode)
+
+        # 制限を超える場合は文単位で分割処理
+        tokens = []
+
+        # 文単位で分割（句点・改行・感嘆符・疑問符）
+        sentences = re.split(r'([。！？\n]+)', text)
+
+        current_chunk = []
+        current_bytes = 0
+
+        for sentence in sentences:
+            sentence_bytes = len(sentence.encode('utf-8'))
+
+            # 1文が制限を超える場合は文字数で強制分割
+            if sentence_bytes > self.max_tokenize_bytes:
+                # 安全な文字数を計算（バイト数ベース）
+                safe_char_count = len(sentence) * self.max_tokenize_bytes // sentence_bytes
+                # 余裕を持たせる（90%）
+                safe_char_count = int(safe_char_count * 0.9)
+
+                for i in range(0, len(sentence), safe_char_count):
+                    chunk = sentence[i:i+safe_char_count]
+                    if chunk.strip():
+                        try:
+                            tokens.extend(self.tokenizer_obj.tokenize(chunk, mode))
+                        except Exception as e:
+                            logger.warning(f"Failed to tokenize chunk: {e}")
+                continue
+
+            # チャンク蓄積
+            if current_bytes + sentence_bytes > self.max_tokenize_bytes:
+                # 現在のチャンクをトークン化
+                if current_chunk:
+                    chunk_text = ''.join(current_chunk)
+                    try:
+                        tokens.extend(self.tokenizer_obj.tokenize(chunk_text, mode))
+                    except Exception as e:
+                        logger.warning(f"Failed to tokenize chunk: {e}")
+
+                # 新しいチャンク開始
+                current_chunk = [sentence]
+                current_bytes = sentence_bytes
+            else:
+                current_chunk.append(sentence)
+                current_bytes += sentence_bytes
+
+        # 残りのチャンクを処理
+        if current_chunk:
+            chunk_text = ''.join(current_chunk)
+            try:
+                tokens.extend(self.tokenizer_obj.tokenize(chunk_text, mode))
+            except Exception as e:
+                logger.warning(f"Failed to tokenize final chunk: {e}")
+
+        return tokens
+
     def _compile_term_patterns(self) -> List[re.Pattern]:
         """専門用語を抽出するための正規表現パターン"""
         patterns = [
-            # 型式番号・製品コード
-            r'\b[A-Z0-9]{2,}[-_][A-Z0-9]+\b',
-            r'\b[0-9]+[A-Z]{2,}[-_][0-9]+\b',
+            # 型式番号・製品コード（6DE-18、L28ADF、4T-C、12V170など）
+            r'\b[0-9]+[A-Z]+[-_][0-9]+[A-Z]*\b',  # 6DE-18, 12V-170
+            r'\b[A-Z]+[0-9]+[A-Z]+[-_]?[0-9]*\b',  # L28ADF, 4T-C
+            r'\b[0-9]+[A-Z]{2,}[-_]?[0-9]*\b',     # 6DE, 12V170
 
             # 化学式・化合物
             r'\b(CO2|NOx|SOx|PM2\.5|NH3|H2O|CH4|N2O)\b',
 
-            # 専門的な略語（3文字以上の大文字）
-            r'\b[A-Z]{3,}\b',
+            # 専門的な略語（3文字以上の大文字、HTMLタグを除外）
+            r'\b(?!(?:div|span|img|svg|td|tr|th|tbody|thead|table|ul|ol|li|br|hr|pre|code|html|body|head|meta|link|script|style|form|input|button|label|select|option|iframe|nav|header|footer|section|article|aside|main|figure|figcaption|video|audio|source|canvas|embed|object|param)\b)[A-Z]{3,}\b',
 
             # 数値+単位の仕様
             r'\b\d+(\.\d+)?\s*(mg|kg|kWh|MW|rpm|bar|°C|K|Pa|MPa|m³|L)/?\w*\b',
@@ -153,7 +218,7 @@ class AdvancedStatisticalExtractor:
         """
         mode_c_terms = defaultdict(int)
 
-        tokens = self.tokenizer_obj.tokenize(text, self.sudachi_mode_c)
+        tokens = self._safe_tokenize(text, self.sudachi_mode_c)
 
         for token in tokens:
             term = token.surface()
@@ -167,21 +232,40 @@ class AdvancedStatisticalExtractor:
         return mode_c_terms
 
     def _extract_ngrams(self, text: str) -> Dict[str, int]:
-        """n-gram抽出（Mode A使用）"""
+        """n-gram抽出（品詞ベース：名詞連続のみ）"""
         ngrams = defaultdict(int)
 
         # Sudachiでトークン化（Mode A: 短単位）
-        tokens = self.tokenizer_obj.tokenize(text, self.sudachi_mode_a)
-        words = [token.surface() for token in tokens]
+        tokens = self._safe_tokenize(text, self.sudachi_mode_a)
 
-        # n-gram生成（2-gram から max_term_length-gram まで）
-        for n in range(self.min_term_length, self.max_term_length + 1):
-            for i in range(len(words) - n + 1):
-                ngram = ''.join(words[i:i+n])
+        # 名詞・接頭辞の連続を抽出
+        noun_sequences = []
+        current_sequence = []
 
-                # 基本フィルタ（ひらがなのみ、記号のみを除外）
-                if self._is_valid_term(ngram):
-                    ngrams[ngram] += 1
+        for token in tokens:
+            pos = token.part_of_speech()[0]
+
+            # 名詞または接頭辞の場合は連続に追加
+            if pos in ['名詞', '接頭辞']:
+                current_sequence.append(token.surface())
+            else:
+                # 連続が終了したら保存
+                if len(current_sequence) >= self.min_term_length:
+                    noun_sequences.append(current_sequence)
+                current_sequence = []
+
+        # 最後の連続も保存
+        if len(current_sequence) >= self.min_term_length:
+            noun_sequences.append(current_sequence)
+
+        # 名詞連続からn-gramを生成
+        for sequence in noun_sequences:
+            for n in range(self.min_term_length, min(self.max_term_length + 1, len(sequence) + 1)):
+                for i in range(len(sequence) - n + 1):
+                    ngram = ''.join(sequence[i:i+n])
+
+                    if self._is_valid_term(ngram):
+                        ngrams[ngram] += 1
 
         return ngrams
 
@@ -202,7 +286,7 @@ class AdvancedStatisticalExtractor:
         """複合名詞の抽出（Mode A使用）"""
         compound_nouns = defaultdict(int)
 
-        tokens = self.tokenizer_obj.tokenize(text, self.sudachi_mode_a)
+        tokens = self._safe_tokenize(text, self.sudachi_mode_a)
         current_compound = []
 
         for token in tokens:
@@ -228,9 +312,22 @@ class AdvancedStatisticalExtractor:
         return compound_nouns
 
     def _is_valid_term(self, term: str) -> bool:
-        """用語の妥当性チェック"""
+        """用語の妥当性チェック（文字列 + 品詞ベース）"""
         # 空文字列チェック
         if not term or len(term) < 2:
+            return False
+
+        # HTMLタグ除外（小文字のタグ名）
+        html_tags = {
+            'div', 'span', 'img', 'svg', 'td', 'tr', 'th', 'tbody', 'thead', 'table',
+            'ul', 'ol', 'li', 'br', 'hr', 'pre', 'code', 'html', 'body', 'head',
+            'meta', 'link', 'script', 'style', 'form', 'input', 'button', 'label',
+            'select', 'option', 'iframe', 'nav', 'header', 'footer', 'section',
+            'article', 'aside', 'main', 'figure', 'figcaption', 'video', 'audio',
+            'source', 'canvas', 'embed', 'object', 'param', 'a', 'p', 'h1', 'h2',
+            'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'b', 'i', 'u', 's', 'small'
+        }
+        if term.lower() in html_tags:
             return False
 
         # ひらがなのみを除外
@@ -241,9 +338,43 @@ class AdvancedStatisticalExtractor:
         if re.match(r'^[!-/:-@\[-`{-~\s]+$', term):
             return False
 
+        # 記号で始まる/終わる用語を除外（例：「（％」「，アンモニア」）
+        if re.match(r'^[!-/:-@\[-`{-~、。，．・「」『』（）\s]', term):
+            return False
+        if re.match(r'[!-/:-@\[-`{-~、。，．・「」『』（）\s]$', term):
+            return False
+
         # 数字のみを除外（ただし単位付きは許可）
         if re.match(r'^\d+$', term):
             return False
+
+        # 超汎用的な単語のみ除外（最小限）
+        generic_terms = {'エリア', 'モード'}
+        if term in generic_terms:
+            return False
+
+        # 品詞チェック：名詞・接頭辞・接尾辞・記号（一部）のみ許可
+        try:
+            tokens = self._safe_tokenize(term, self.sudachi_mode_a)
+            for token in tokens:
+                pos = token.part_of_speech()[0]
+                pos_sub = token.part_of_speech()[1] if len(token.part_of_speech()) > 1 else ''
+
+                # 許可する品詞
+                allowed_pos = ['名詞', '接頭辞', '接尾辞']
+                # 許可する記号（単位など）
+                allowed_symbols = ['％', '°', '/', '-', '・']
+
+                if pos not in allowed_pos:
+                    # 記号の場合は許可リストをチェック
+                    if pos == '補助記号' and token.surface() in allowed_symbols:
+                        continue
+                    # それ以外（助詞、動詞、形容詞など）は除外
+                    return False
+
+        except Exception:
+            # 形態素解析エラーの場合は基本チェックのみで通す
+            pass
 
         return True
 
@@ -307,7 +438,7 @@ class AdvancedStatisticalExtractor:
         window_size = 10
 
         # Sudachiで形態素解析
-        tokens = self.tokenizer_obj.tokenize(full_text, self.sudachi_mode_a)
+        tokens = self._safe_tokenize(full_text, self.sudachi_mode_a)
         words = [token.surface() for token in tokens]
 
         # 候補用語の頻度カウント
@@ -352,7 +483,7 @@ class AdvancedStatisticalExtractor:
         phrases = []
 
         # Mode Aで短単位トークン化
-        tokens = self.tokenizer_obj.tokenize(text, self.sudachi_mode_a)
+        tokens = self._safe_tokenize(text, self.sudachi_mode_a)
         current_phrase = []
 
         for token in tokens:
@@ -374,7 +505,7 @@ class AdvancedStatisticalExtractor:
         candidates: Dict[str, int]
     ) -> Dict[str, float]:
         """
-        TF-IDF計算
+        TF-IDF計算（形態素ベース・完全一致）
 
         Args:
             documents: 文書リスト（文単位で分割）
@@ -383,57 +514,68 @@ class AdvancedStatisticalExtractor:
         Returns:
             TF-IDFスコアの辞書
         """
-        # 候補用語のみを対象にしたTF-IDF計算
         vocabulary = list(candidates.keys())
+        N = len(documents)  # 文書数
 
-        # TfidfVectorizerを使用
-        vectorizer = TfidfVectorizer(
-            vocabulary=vocabulary,
-            token_pattern=r'\S+',
-            lowercase=False,
-            norm=None
-        )
+        # 事前に全用語をトークン化（効率化）
+        term_token_map = {}
+        for term in vocabulary:
+            try:
+                term_tokens = tuple([t.surface() for t in self._safe_tokenize(term, self.sudachi_mode_a)])
+                term_token_map[term] = term_tokens
+            except:
+                term_token_map[term] = (term,)  # フォールバック
 
-        try:
-            # 文書を候補用語でトークン化
-            tokenized_docs = []
-            for doc in documents:
-                tokens = []
-                for term in vocabulary:
-                    count = doc.count(term)
-                    tokens.extend([term] * count)
-                tokenized_docs.append(' '.join(tokens))
+        # 1. 各用語の文書頻度（DF）を計算
+        df = defaultdict(int)
+        term_freq_per_doc = []  # 各文書での用語頻度
 
-            # TF-IDF計算
-            tfidf_matrix = vectorizer.fit_transform(tokenized_docs)
+        for doc in documents:
+            # 形態素解析してトークン化（Mode A）
+            tokens = self._safe_tokenize(doc, self.sudachi_mode_a)
+            token_surfaces = tuple([t.surface() for t in tokens])
 
-            # 各用語の最大TF-IDFスコアを取得
-            tfidf_scores = {}
-            feature_names = vectorizer.get_feature_names_out()
+            # n-gramで用語マッチング（完全一致のみ）
+            doc_term_count = defaultdict(int)
 
-            for i, term in enumerate(feature_names):
-                scores = tfidf_matrix[:, i].toarray().flatten()
-                tfidf_scores[term] = float(np.max(scores))
+            for term, term_tokens in term_token_map.items():
+                term_len = len(term_tokens)
 
-            return tfidf_scores
+                # トークン列を走査して用語を検索
+                for i in range(len(token_surfaces) - term_len + 1):
+                    if token_surfaces[i:i+term_len] == term_tokens:
+                        doc_term_count[term] += 1
 
-        except Exception as e:
-            logger.warning(f"TF-IDF calculation error: {e}")
-            # フォールバック：頻度ベースのスコア
-            max_freq = max(candidates.values()) if candidates else 1
-            return {
-                term: freq / max_freq
-                for term, freq in candidates.items()
-            }
+            # DF計算（この文書に出現するか）
+            for term in doc_term_count:
+                df[term] += 1
+
+            term_freq_per_doc.append(doc_term_count)
+
+        # 2. TF-IDF計算
+        tfidf_scores = {}
+        for term in vocabulary:
+            # 各文書でのTF-IDF合計
+            total_tfidf = 0.0
+            for doc_tf in term_freq_per_doc:
+                tf = doc_tf.get(term, 0)
+                if tf > 0 and df.get(term, 0) > 0:
+                    # TF-IDF = TF * log(N / DF)
+                    idf = math.log(N / df[term])
+                    total_tfidf += tf * idf
+
+            tfidf_scores[term] = total_tfidf
+
+        return tfidf_scores
 
     def calculate_cvalue(self, candidates: Dict[str, int]) -> Dict[str, float]:
         """
-        C-value計算（ネストした用語の考慮）
+        C-value計算（ネストした用語の考慮）- 形態素数ベース
 
         C-value = log2(|a|) * freq(a) - (1/|Ta|) * Σ freq(b)
 
         where:
-        - |a| = 用語aの長さ（単語数）
+        - |a| = 用語aの長さ（形態素数）
         - freq(a) = 用語aの頻度
         - Ta = aを含むより長い用語の集合
         - b ∈ Ta
@@ -454,7 +596,15 @@ class AdvancedStatisticalExtractor:
         # C-value計算
         for term in candidates:
             freq = candidates[term]
-            term_length = len(term.split()) if ' ' in term else len([c for c in term if c.isalpha()])
+
+            # 形態素数を正確に計算
+            try:
+                term_tokens = self._safe_tokenize(term, self.sudachi_mode_a)
+                term_length = len(term_tokens)
+            except:
+                # フォールバック：文字数
+                term_length = len(term)
+
             term_length = max(term_length, 1)
 
             # 基本C-value
@@ -496,7 +646,7 @@ class AdvancedStatisticalExtractor:
         stage: str = "final"
     ) -> Dict[str, float]:
         """
-        TF-IDFとC-valueの重み付き結合
+        TF-IDFとC-valueの重み付き結合（複合語優先）
 
         Args:
             tfidf_scores: TF-IDFスコア
@@ -512,22 +662,38 @@ class AdvancedStatisticalExtractor:
 
         # ステージ別の重み設定
         if stage == "seed":
-            # シード選定用：C-value重視
+            # シード選定用：C-value重視（複合語優先）
             w_tfidf = 0.3
             w_cvalue = 0.7
         else:
-            # 最終スコア用：TF-IDF重視
-            w_tfidf = 0.7
-            w_cvalue = 0.3
+            # 最終スコア用：バランス型（C-value少し優先で複合語促進）
+            w_tfidf = 0.4
+            w_cvalue = 0.6
 
-        # 重み付き結合（重要：再正規化しない）
+        # 重み付き結合
         combined = {}
         all_terms = set(tfidf_scores.keys()) | set(cvalue_scores.keys())
 
         for term in all_terms:
             tfidf = tfidf_norm.get(term, 0.0)
             cvalue = cvalue_norm.get(term, 0.0)
-            combined[term] = w_tfidf * tfidf + w_cvalue * cvalue
+
+            # 基本スコア
+            base_score = w_tfidf * tfidf + w_cvalue * cvalue
+
+            # 複合語ボーナス（形態素数に応じて）
+            try:
+                term_tokens = self._safe_tokenize(term, self.sudachi_mode_a)
+                morpheme_count = len(term_tokens)
+
+                # 2形態素以上でボーナス（最大1.5倍）
+                if morpheme_count >= 2:
+                    compound_bonus = min(1.0 + (morpheme_count - 1) * 0.15, 1.5)
+                    base_score *= compound_bonus
+            except:
+                pass  # トークン化失敗時はボーナスなし
+
+            combined[term] = base_score
 
         return combined
 
