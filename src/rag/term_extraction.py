@@ -312,9 +312,9 @@ class TermExtractor:
         ]).partial(format_instructions=self.json_parser.get_format_instructions())
 
     async def extract_from_documents(self, file_paths: List[Path]) -> List[Dict]:
-        """複数の文書から専門用語を抽出"""
+        """複数の文書から専門用語を抽出（ドキュメントごとに候補抽出）"""
         all_chunks = []
-        full_text = ""
+        per_document_texts = []  # ドキュメントごとのテキスト
 
         # 文書の読み込みと分割
         for file_path in file_paths:
@@ -323,8 +323,13 @@ class TermExtractor:
                 docs = loader.load()
                 chunks = self.text_splitter.split_documents(docs)
                 all_chunks.extend([c.page_content for c in chunks])
-                # 統計的抽出用に全文テキストも保持
-                full_text += "\n".join([c.page_content for c in chunks]) + "\n"
+
+                # ドキュメントごとのテキストを保存
+                doc_text = "\n".join([c.page_content for c in chunks])
+                per_document_texts.append({
+                    "file_path": str(file_path),
+                    "text": doc_text
+                })
             except Exception as e:
                 logger.error(f"Failed to load {file_path}: {e}")
 
@@ -333,9 +338,9 @@ class TermExtractor:
             return []
 
         # 高度な統計的抽出を使用
-        if self.use_advanced_extraction and full_text:
-            logger.info("Using advanced statistical extraction")
-            terms = await self._extract_with_advanced_method(full_text, all_chunks)
+        if self.use_advanced_extraction and per_document_texts:
+            logger.info("Using advanced statistical extraction (per-document candidate extraction)")
+            terms = await self._extract_with_advanced_method_per_document(per_document_texts, all_chunks)
         else:
             # 従来の方法で抽出
             logger.info("Using traditional extraction")
@@ -477,25 +482,50 @@ class TermExtractor:
         # 頻度でフィルタリング
         return [term for term, freq in candidates.items() if freq >= 2]
 
-    async def _extract_with_advanced_method(self, full_text: str, chunks: List[str]) -> List[Dict]:
+    async def _extract_with_advanced_method_per_document(
+        self, per_document_texts: List[Dict[str, str]], all_chunks: List[str]
+    ) -> List[Dict]:
         """
-        完全なSemReRankパイプライン:
-        統計的抽出 → SemReRank → RAG定義生成 → LLMフィルタ
+        ドキュメントごとの候補抽出 + 全体統合パイプライン:
+        1. 各ドキュメントで候補抽出
+        2. 全ドキュメントで統計計算（TF-IDF, C-value）
+        3. SemReRank
+        4. RAG定義生成
+        5. LLMフィルタ
         """
-        logger.info("Starting advanced term extraction with SemReRank pipeline")
+        logger.info("Starting per-document candidate extraction with global scoring")
 
-        # 1. 候補抽出
-        candidates = self.statistical_extractor.extract_candidates(full_text)
-        if not candidates:
-            logger.warning("No candidates extracted")
+        # 1. 各ドキュメントで候補抽出
+        all_candidates = defaultdict(int)
+        document_candidate_map = {}  # ドキュメントごとの候補リスト
+
+        for doc_info in per_document_texts:
+            file_path = doc_info["file_path"]
+            text = doc_info["text"]
+
+            logger.info(f"Extracting candidates from: {Path(file_path).name}")
+            doc_candidates = self.statistical_extractor.extract_candidates(text)
+
+            document_candidate_map[file_path] = doc_candidates
+
+            # 全体候補に統合
+            for term, freq in doc_candidates.items():
+                all_candidates[term] += freq
+
+        if not all_candidates:
+            logger.warning("No candidates extracted from any document")
             return []
 
-        logger.info(f"Extracted {len(candidates)} candidates")
+        logger.info(f"Total candidates across all documents: {len(all_candidates)}")
+        logger.info(f"Processed {len(per_document_texts)} documents")
 
-        # 2. TF-IDF + C-value計算
+        # 2. 全ドキュメントでTF-IDF + C-value計算
+        # 全テキストを結合して文単位に分割
+        full_text = "\n".join([doc["text"] for doc in per_document_texts])
         documents = self._split_into_sentences(full_text)
-        tfidf_scores = self.statistical_extractor.calculate_tfidf(documents, candidates)
-        cvalue_scores = self.statistical_extractor.calculate_cvalue(candidates)
+
+        tfidf_scores = self.statistical_extractor.calculate_tfidf(documents, all_candidates)
+        cvalue_scores = self.statistical_extractor.calculate_cvalue(all_candidates)
 
         # 3. 基底スコア計算（2段階）
         seed_scores = self.statistical_extractor.calculate_combined_scores(
@@ -505,27 +535,30 @@ class TermExtractor:
             tfidf_scores, cvalue_scores, stage="final"  # Stage B: 最終スコア用（TF-IDF重視）
         )
 
-        # 3.5. SemReRank用に上位候補に絞る（計算コスト削減）
-        MAX_SEMRERANK_CANDIDATES = 50
-        if self.semrerank and len(candidates) > MAX_SEMRERANK_CANDIDATES:
-            # seed_scoresでソートして上位を選択
-            top_candidates = sorted(seed_scores.items(), key=lambda x: x[1], reverse=True)[:MAX_SEMRERANK_CANDIDATES]
-            top_candidate_terms = [term for term, _ in top_candidates]
+        # 3.5. 全候補でSemReRank実行（候補数制限を削除）
+        # 以前はMAX_SEMRERANK_CANDIDATES=50に制限していたが、
+        # 計算コストは許容範囲内（+10-15秒）なので全候補で実行
+        candidates_for_semrerank = all_candidates
+        seed_scores_for_semrerank = seed_scores
+        base_scores_for_semrerank = base_scores
 
-            # 絞り込んだ候補でスコアを再構築
-            filtered_candidates = {term: candidates[term] for term in top_candidate_terms}
-            filtered_seed_scores = {term: seed_scores[term] for term in top_candidate_terms}
-            filtered_base_scores = {term: base_scores[term] for term in top_candidate_terms}
+        logger.info(f"Processing {len(all_candidates)} candidates with SemReRank (no limit)")
 
-            logger.info(f"Reduced candidates from {len(candidates)} to {len(filtered_candidates)} for SemReRank")
+        # 3.6. 略語にボーナススコアを付与
+        logger.info("Applying abbreviation bonus scores")
+        import re
+        abbreviation_pattern = re.compile(r'^[A-Z]{2,5}$')
+        abbreviation_count = 0
 
-            candidates_for_semrerank = filtered_candidates
-            seed_scores_for_semrerank = filtered_seed_scores
-            base_scores_for_semrerank = filtered_base_scores
-        else:
-            candidates_for_semrerank = candidates
-            seed_scores_for_semrerank = seed_scores
-            base_scores_for_semrerank = base_scores
+        for term in candidates_for_semrerank.keys():
+            if abbreviation_pattern.match(term):
+                # 略語には1.3倍のボーナス
+                base_scores_for_semrerank[term] *= 1.3
+                seed_scores_for_semrerank[term] *= 1.3
+                abbreviation_count += 1
+                logger.info(f"  [BONUS] {term}: abbreviation bonus applied (×1.3)")
+
+        logger.info(f"Applied bonus to {abbreviation_count} abbreviations")
 
         # 4. SemReRank適用（オプション）
         if self.semrerank:
@@ -558,7 +591,7 @@ class TermExtractor:
                 score=enhanced_scores[term],
                 tfidf_score=tfidf_scores.get(term, 0.0),
                 cvalue_score=cvalue_scores.get(term, 0.0),
-                frequency=candidates.get(term, 0),
+                frequency=all_candidates.get(term, 0),
                 synonyms=synonym_map.get(term, [])
             )
             for term in enhanced_scores
@@ -567,37 +600,83 @@ class TermExtractor:
 
         logger.info(f"Sorted {len(terms)} terms by enhanced scores")
 
-        # 7. RAG定義生成（上位N%）
+        # 7. 軽量LLMフィルタ（定義生成前、コスト削減）
+        # 略語は問答無用で定義生成に進ませる
+        abbreviations = [t for t in terms if self._is_abbreviation(t.term)]
+        non_abbreviations = [t for t in terms if not self._is_abbreviation(t.term)]
+
+        logger.info(f"Found {len(abbreviations)} abbreviations (will auto-include for definition generation)")
+
+        enable_lightweight_filter = getattr(self.config, 'enable_lightweight_filter', True)
+
+        if enable_lightweight_filter and self.llm:
+            logger.info("Applying lightweight LLM filter (before definition generation)")
+            try:
+                # 上位N%を選択してから軽量フィルタ（略語以外）
+                definition_percentile = getattr(self.config, 'definition_generation_percentile', 50.0)
+                n_candidates = max(1, int(len(non_abbreviations) * definition_percentile / 100))
+                candidate_terms = non_abbreviations[:n_candidates]
+
+                logger.info(f"Lightweight filtering {len(candidate_terms)} candidates (top {definition_percentile}%)")
+
+                filtered_terms = await self._lightweight_llm_filter(candidate_terms)
+                logger.info(f"Lightweight filter passed: {len(filtered_terms)}/{len(candidate_terms)} terms")
+
+                # フィルタ通過した用語 + 全略語を定義生成対象にする
+                terms_for_definition = abbreviations + filtered_terms
+            except Exception as e:
+                logger.error(f"Lightweight filter failed: {e}. Proceeding without filtering.")
+                # フィルタ失敗時は上位N%をそのまま使用 + 全略語
+                definition_percentile = getattr(self.config, 'definition_generation_percentile', 50.0)
+                n_candidates = max(1, int(len(non_abbreviations) * definition_percentile / 100))
+                terms_for_definition = abbreviations + non_abbreviations[:n_candidates]
+        else:
+            # 軽量フィルタ無効時は上位N%をそのまま使用 + 全略語
+            definition_percentile = getattr(self.config, 'definition_generation_percentile', 50.0)
+            n_candidates = max(1, int(len(non_abbreviations) * definition_percentile / 100))
+            terms_for_definition = abbreviations + non_abbreviations[:n_candidates]
+            logger.info(f"Lightweight filter disabled, using top {definition_percentile}% ({len(terms_for_definition)} terms including {len(abbreviations)} abbreviations)")
+
+        # 8. RAG定義生成
         if self.vector_store and self.llm:
-            logger.info("Generating definitions with RAG")
+            logger.info(f"Generating definitions with RAG for {len(terms_for_definition)} terms")
             try:
                 from .prompts import get_definition_generation_prompt
                 from langchain_core.output_parsers import StrOutputParser
 
-                definition_percentile = getattr(self.config, 'definition_generation_percentile', 15.0)
-                n_terms = max(1, int(len(terms) * definition_percentile / 100))
-                target_terms = terms[:n_terms]
-
                 prompt = get_definition_generation_prompt()
                 chain = prompt | self.llm | StrOutputParser()
 
-                for i, term in enumerate(target_terms, 1):
+                for i, term in enumerate(terms_for_definition, 1):
                     try:
-                        docs = self.vector_store.similarity_search(term.term, k=5)
+                        # 略語の場合、ハイブリッド検索のために拡張クエリを使用
+                        is_abbr = self._is_abbreviation(term.term)
+                        search_query = f"{term.term} 略語" if is_abbr else term.term
+
+                        docs = self.vector_store.similarity_search(search_query, k=5)
                         if docs:
                             context = "\n\n".join([doc.page_content for doc in docs])[:3000]
                             definition = await chain.ainvoke({"term": term.term, "context": context})
                             term.definition = definition.strip()
-                            logger.info(f"[{i}/{n_terms}] Generated definition for: {term.term}")
+                            logger.info(f"[{i}/{len(terms_for_definition)}] Generated definition for: {term.term}")
+                        else:
+                            # コンテキストが見つからない場合、略語なら仮定義を設定
+                            if is_abbr:
+                                term.definition = f"{term.term}（専門用語の略語）"
+                                logger.info(f"[{i}/{len(terms_for_definition)}] Set placeholder definition for abbreviation: {term.term}")
                     except Exception as e:
                         logger.error(f"Failed to generate definition for '{term.term}': {e}")
-                        term.definition = ""
+                        # エラーの場合も略語なら仮定義を設定
+                        if self._is_abbreviation(term.term):
+                            term.definition = f"{term.term}（専門用語の略語）"
+                        else:
+                            term.definition = ""
             except Exception as e:
                 logger.error(f"Definition generation failed: {e}")
         else:
             logger.warning("RAG definition generation skipped (vector_store or llm not available)")
 
-        # 8. LLMフィルタ（定義がある用語のみ）
+        # 9. 重量LLMフィルタ（定義がある用語のみ）
         if self.llm:
             logger.info("Filtering terms with LLM")
             try:
@@ -640,7 +719,7 @@ class TermExtractor:
         else:
             logger.warning("LLM filter skipped (llm not available)")
 
-        # 9. 辞書形式に変換して返す
+        # 10. 辞書形式に変換して返す
         return [
             {
                 "headword": term.term,
@@ -654,6 +733,83 @@ class TermExtractor:
             }
             for term in terms
         ]
+
+    def _is_abbreviation(self, term: str) -> bool:
+        """
+        略語判定ヘルパー関数
+
+        Args:
+            term: 判定する用語
+
+        Returns:
+            略語であればTrue
+        """
+        import re
+        # 2-5文字の大文字のみ（BMS、AVR、EMS、SFOC、NOx、CO2など）
+        abbreviation_pattern = re.compile(r'^[A-Z]{2,5}[0-9x]?$')
+        return bool(abbreviation_pattern.match(term))
+
+    async def _lightweight_llm_filter(self, terms: List) -> List:
+        """
+        軽量LLMフィルタ（定義生成前）
+        明らかなゴミ（単体の一般名詞、動詞、形容詞など）を除外してコスト削減
+
+        **重要:** 略語（2-5文字の大文字）は問答無用で通過させる
+
+        Args:
+            terms: ExtractedTermオブジェクトのリスト
+
+        Returns:
+            フィルタ通過した用語のリスト
+        """
+        from .prompts import get_lightweight_term_filter_prompt
+        from langchain_core.output_parsers import StrOutputParser
+
+        if not terms:
+            return []
+
+        # 略語とその他を分離
+        abbreviations = []
+        non_abbreviations = []
+
+        for term in terms:
+            if self._is_abbreviation(term.term):
+                abbreviations.append(term)
+                logger.info(f"  [AUTO-PASS] {term.term}: abbreviation (skipped lightweight filter)")
+            else:
+                non_abbreviations.append(term)
+
+        logger.info(f"Auto-passed {len(abbreviations)} abbreviations, filtering {len(non_abbreviations)} non-abbreviations")
+
+        # 略語は自動通過
+        valid_terms = abbreviations.copy()
+
+        # 非略語のみLLMフィルタ実行
+        if non_abbreviations:
+            prompt = get_lightweight_term_filter_prompt()
+            chain = prompt | self.llm | StrOutputParser()
+
+            batch_size = getattr(self.config, 'llm_filter_batch_size', 10)
+
+            for i in range(0, len(non_abbreviations), batch_size):
+                batch = non_abbreviations[i:i+batch_size]
+                batch_inputs = [{"term": t.term} for t in batch]
+
+                try:
+                    result_texts = await chain.abatch(batch_inputs)
+                    for term, result_text in zip(batch, result_texts):
+                        result = self._parse_llm_json(result_text)
+                        if result and result.get("is_valid", False):
+                            valid_terms.append(term)
+                            logger.info(f"  [PASS] {term.term}: {result.get('reason', '')}")
+                        else:
+                            logger.info(f"  [SKIP] {term.term}: {result.get('reason', '') if result else 'Invalid JSON'}")
+                except Exception as e:
+                    logger.error(f"Lightweight filter batch failed: {e}")
+                    # エラー時はバッチ全体を通過させる（False Negativeを避ける）
+                    valid_terms.extend(batch)
+
+        return valid_terms
 
     def _split_into_sentences(self, text: str) -> List[str]:
         """文単位で分割"""

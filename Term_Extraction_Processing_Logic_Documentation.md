@@ -28,50 +28,66 @@
 ### 1.1 システムアーキテクチャ
 
 ```
-入力テキスト
+複数ドキュメント
     ↓
 ┌─────────────────────────────────────────────┐
-│  Phase 1: ハイブリッド候補抽出              │
-│  - Mode C (長単位)                          │
-│  - Mode A + n-gram (短単位)                 │
-│  - 正規表現パターン                         │
-│  - 複合名詞抽出                             │
+│  Phase 1: ドキュメントごとの候補抽出        │
+│  ★各ドキュメントで独立して抽出（重要！）   │
+│  ┌─────────────────────────────────────┐   │
+│  │ 1. 正規表現パターン（最優先）        │   │
+│  │    - 括弧内略語: （BMS）、(AVR)      │   │
+│  │    - コロン形式: SFOC: Specific      │   │
+│  │    - 型式番号: 6DE-18、L28ADF        │   │
+│  │    - 化学式: NOx、CO2、SOx           │   │
+│  │ 2. Mode C (長単位)                   │   │
+│  │ 3. Mode A + n-gram (短単位)          │   │
+│  │ 4. 複合名詞抽出                      │   │
+│  └─────────────────────────────────────┘   │
+│  全ドキュメントで頻度を統合                 │
 └─────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────┐
-│  Phase 2: 統計的スコアリング                │
-│  - TF-IDF計算                               │
-│  - C-value計算                              │
-│  - 2段階スコア（Seed用/Final用）            │
+│  Phase 2: 統計的スコアリング（全体統合）    │
+│  - TF-IDF計算（全ドキュメント）             │
+│  - C-value計算（全ドキュメント）            │
+│  - 略語ボーナス（×1.3）                     │
+│  - 2段階スコア生成                          │
+│    ├─ Seed用: C-value重視（上位15%）       │
+│    └─ Base用: TF-IDF重視（最終スコア）     │
 └─────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────┐
-│  Phase 3: SemReRank適用                     │
-│  - 埋め込みキャッシュ取得                   │
+│  Phase 3: SemReRank適用（候補数制限なし）   │
+│  - 埋め込みキャッシュ取得（pgvector）       │
 │  - 意味的関連性グラフ構築                   │
-│  - シード選定（上位N%）                     │
+│  - シード選定（上位15%、C-value重視）       │
 │  - Personalized PageRank実行                │
-│  - スコア改訂                               │
+│  - スコア改訂（全候補）                     │
 └─────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────┐
-│  Phase 4: 類義語検出                        │
-│  - 6つの検出手法                            │
-│  - 部分文字列/共起/編集距離/語幹/略語/      │
-│    ドメイン固有                             │
+│  Phase 4: 軽量LLMフィルタ（コスト削減）     │
+│  ★略語を自動通過（問答無用で定義生成へ）   │
+│  - 非略語の上位50%を軽量フィルタ            │
+│  - 明らかなゴミを除外（一般名詞、動詞など） │
+│  - 略語 + フィルタ通過用語 → 定義生成へ     │
 └─────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────┐
 │  Phase 5: RAG定義生成                       │
-│  - 上位N%選定                               │
-│  - ベクトル検索でコンテキスト取得           │
+│  - 略語用ハイブリッド検索                   │
+│    （クエリ拡張: "{term} 略語"）           │
+│  - ベクトル検索でコンテキスト取得（k=5）    │
 │  - LLMで定義生成                            │
+│  - 定義なしの略語には仮定義を設定           │
 └─────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────┐
-│  Phase 6: LLMフィルタ                       │
-│  - バッチ処理                               │
-│  - 専門用語判定                             │
+│  Phase 6: 重量LLMフィルタ（専門用語判定）   │
+│  - 定義がある用語のみ対象                   │
+│  - バッチ処理（デフォルト10件）             │
+│  - ドメイン固有性を判定                     │
+│    （LLMが知らない用語を優先）             │
 │  - 最終出力                                 │
 └─────────────────────────────────────────────┘
     ↓
@@ -174,7 +190,109 @@ for term, freq in ngram_candidates.items():
 
 ## 3. 候補抽出フェーズ
 
-### 3.1 4つの抽出手法
+### 3.0 重要: ドキュメントごとの候補抽出
+
+**実装**: `term_extraction.py:485-528`
+
+複数ドキュメントがある場合、**各ドキュメントで独立して候補抽出を実行**し、その後全体で統合します。
+
+```python
+async def _extract_with_advanced_method_per_document(
+    self, per_document_texts: List[Dict[str, str]], all_chunks: List[str]
+) -> List[Dict]:
+    # 1. 各ドキュメントで候補抽出
+    all_candidates = defaultdict(int)
+
+    for doc_info in per_document_texts:
+        file_path = doc_info["file_path"]
+        text = doc_info["text"]
+
+        # ドキュメントごとに候補抽出
+        doc_candidates = self.statistical_extractor.extract_candidates(text)
+
+        # 全体候補に統合
+        for term, freq in doc_candidates.items():
+            all_candidates[term] += freq
+
+    # 2. 全体でTF-IDF、C-value計算
+    # 3. SemReRank適用
+    # ...
+```
+
+**重要性**:
+- ドキュメント固有の専門用語を確実に抽出
+- 全体統計（TF-IDF、C-value）は全ドキュメントで計算
+- 定義生成・類義語検出も全ドキュメント横断で実行
+
+### 3.1 5つの抽出手法（優先順位順）
+
+#### 3.1.0 正規表現パターン抽出（最優先）
+
+**実装**: `advanced_term_extraction.py:145-175`
+
+**重要**: 正規表現パターンを**最優先**で実行し、Sudachi解析前に略語や型式番号を確保します。
+
+```python
+def extract_candidates(self, text: str) -> Dict[str, int]:
+    candidates = defaultdict(int)
+
+    # 1. 正規表現パターン（最優先！）
+    if self.use_regex_patterns:
+        pattern_candidates = self._extract_by_patterns(text)
+        for term, freq in pattern_candidates.items():
+            candidates[term] += freq
+
+    # 2. Mode C抽出
+    # 3. Mode A + n-gram
+    # 4. 複合名詞
+```
+
+**パターン例**:
+```python
+patterns = [
+    # 括弧内略語（最優先）
+    r'[（(][A-Z]{2,5}[）)]',  # （BMS）、(AVR)、（EMS）
+
+    # 型式番号
+    r'\b[0-9]+[A-Z]+[-_][0-9]+[A-Z]*\b',  # 6DE-18
+
+    # 化学式
+    r'\b(CO2|NOx|SOx|PM2\.5)\b',
+
+    # 略語パターン
+    r'\b[A-Z]{2,5}:\s*[A-Z]',  # SFOC: Specific
+    r'\b[A-Z]{2,5}\b',  # BMS, AVR, EMS
+]
+```
+
+**括弧・コロン処理**:
+```python
+def _extract_by_patterns(self, text: str) -> Dict[str, int]:
+    for pattern in self.term_patterns:
+        for match in pattern.finditer(text):
+            term = match.group()
+
+            # 括弧除去（全角・半角対応）
+            term = term.strip('（）()')
+
+            # コロン形式から略語抽出（SFOC: Specific → SFOC）
+            if ':' in term:
+                term = term.split(':')[0].strip()
+
+            if self._is_valid_term(term):
+                pattern_terms[term] += 1
+```
+
+**略語の自動承認**:
+```python
+def _is_valid_term(self, term: str) -> bool:
+    # 英字略語は品詞チェックをスキップして自動承認
+    abbreviation_pattern = re.compile(r'^[A-Z]{2,5}[0-9x]?$')
+    if abbreviation_pattern.match(term):
+        return True  # 問答無用で通過
+
+    # その他の品詞チェック...
+```
 
 #### 3.1.1 Mode C抽出
 

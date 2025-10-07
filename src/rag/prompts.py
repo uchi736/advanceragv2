@@ -289,6 +289,43 @@ TECHNICAL_TERM_JUDGMENT_USER_PROMPT = """以下の用語とその定義を分析
 
 上記の判定基準に従って、JSON形式で回答してください。"""
 
+# Lightweight term filter (before definition generation)
+LIGHTWEIGHT_TERM_FILTER_SYSTEM_PROMPT = """あなたは専門用語の事前フィルタリング専門家です。
+用語の形式と構造から、定義生成に値する候補かを高速判定します。
+
+**合格基準（これらは定義生成に進む）:**
+✓ 型番・製品コード（例: 6DE-18、L28ADF、4T-C）
+✓ 化学式・物質名（例: NOx、CO2、アンモニア）
+✓ 技術略語（例: SFOC、BMS、AVR、EGR、MPPT）
+✓ 複合技術用語（例: ターボチャージャー、インタークーラー、ガスタービン発電機）
+✓ 業界固有用語（例: 舶用ディーゼルエンジン、コンバインドサイクル発電）
+✓ 数値+単位の仕様（例: 4ストロークエンジン、50mg/kWh）
+✓ 規格・認証名（例: ISO14001、EIAPP証書）
+
+**除外基準（これらは定義生成不要）:**
+✗ 単体の一般名詞（例: エンジン、ガス、システム、燃料、水、空気）
+✗ 単体の基本動詞（例: 使用、開発、実施、管理、運転）
+✗ 単体の形容詞（例: 最大、以上、最小、高い、低い）
+✗ 抽象概念（例: 目標、計画、状態、結果、効果）
+✗ 意味をなしていない語（例: 不完全な複合語、文字の羅列）
+✗ 助詞・接続詞（例: について、により、など、また）
+
+**重要:**
+- 迷ったら合格にする（False Negativeを避ける）
+- 明らかなゴミのみ除外する
+- 複合語は原則合格
+- 略語は原則合格
+- 数字を含む用語は原則合格
+
+JSON形式で回答: {{"is_valid": true/false, "reason": "簡潔な理由"}}
+"""
+
+LIGHTWEIGHT_TERM_FILTER_USER_PROMPT = """以下の用語を判定してください。
+
+用語: {term}
+
+判定結果:"""
+
 def get_definition_generation_prompt():
     return ChatPromptTemplate.from_messages([
         ("system", DEFINITION_GENERATION_SYSTEM_PROMPT),
@@ -299,4 +336,10 @@ def get_technical_term_judgment_prompt():
     return ChatPromptTemplate.from_messages([
         ("system", TECHNICAL_TERM_JUDGMENT_SYSTEM_PROMPT),
         ("human", TECHNICAL_TERM_JUDGMENT_USER_PROMPT)
+    ])
+
+def get_lightweight_term_filter_prompt():
+    return ChatPromptTemplate.from_messages([
+        ("system", LIGHTWEIGHT_TERM_FILTER_SYSTEM_PROMPT),
+        ("human", LIGHTWEIGHT_TERM_FILTER_USER_PROMPT)
     ])

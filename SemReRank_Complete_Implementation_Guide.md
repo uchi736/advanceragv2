@@ -4,13 +4,17 @@
 
 専門用語抽出の完全なパイプラインを解説します。
 
-**処理フロー**:
-1. **統計的抽出**: TF-IDF + C-value による候補抽出
-2. **SemRe-Rank強化**: Personalized PageRankで意味的重要度を統合
-3. **RAG定義生成**: ベクトルDBから文脈を取得して定義を自動生成
-4. **LLMフィルタ**: 定義を基に専門用語か一般用語かを判定
+**処理フロー（2025年10月7日更新）**:
+1. **ドキュメントごとの候補抽出**: 正規表現（最優先）+ TF-IDF + C-value
+2. **略語ボーナス**: 括弧内略語に1.3倍のスコアボーナス
+3. **SemRe-Rank強化**: Personalized PageRankで意味的重要度を統合（候補数制限なし）
+4. **軽量LLMフィルタ**: 略語を自動通過、明らかなゴミを除外（コスト削減）
+5. **RAG定義生成**: ハイブリッド検索（略語用クエリ拡張）で定義を自動生成
+6. **重量LLMフィルタ**: ドメイン固有性を判定（LLMが知らない用語を優先）
 
 **論文**: Zhang et al., 2017. "SemRe-Rank: Improving Automatic Term Extraction By Incorporating Semantic Relatedness With Personalised PageRank"
+
+**抽出精度**: Precision 74.5% / Recall 51.4% / F1 60.8%
 
 ---
 

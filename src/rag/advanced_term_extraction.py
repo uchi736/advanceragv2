@@ -145,6 +145,9 @@ class AdvancedStatisticalExtractor:
     def _compile_term_patterns(self) -> List[re.Pattern]:
         """専門用語を抽出するための正規表現パターン"""
         patterns = [
+            # 括弧内の略語（最優先で抽出）
+            r'[（(][A-Z]{2,5}[）)]',  # （BMS）、(AVR)、（EMS）形式
+
             # 型式番号・製品コード（6DE-18、L28ADF、4T-C、12V170など）
             r'\b[0-9]+[A-Z]+[-_][0-9]+[A-Z]*\b',  # 6DE-18, 12V-170
             r'\b[A-Z]+[0-9]+[A-Z]+[-_]?[0-9]*\b',  # L28ADF, 4T-C
@@ -153,8 +156,10 @@ class AdvancedStatisticalExtractor:
             # 化学式・化合物
             r'\b(CO2|NOx|SOx|PM2\.5|NH3|H2O|CH4|N2O)\b',
 
-            # 専門的な略語（3文字以上の大文字、HTMLタグを除外）
-            r'\b(?!(?:div|span|img|svg|td|tr|th|tbody|thead|table|ul|ol|li|br|hr|pre|code|html|body|head|meta|link|script|style|form|input|button|label|select|option|iframe|nav|header|footer|section|article|aside|main|figure|figcaption|video|audio|source|canvas|embed|object|param)\b)[A-Z]{3,}\b',
+            # 略語パターン（SFOC、MPPT制御など）
+            r'\b[A-Z]{2,5}:\s*[A-Z]',  # SFOC: Specific形式
+            r'\b[A-Z]{2,5}\b',  # シンプルな略語（2-5文字の大文字）BMS, AVR, EMS, SFOC対応
+            r'\b[A-Z]{2,5}(制御|装置|システム|方式|機能|技術|モード)\b',  # 略語+用語の複合語（MPPT制御など）
 
             # 数値+単位の仕様
             r'\b\d+(\.\d+)?\s*(mg|kg|kWh|MW|rpm|bar|°C|K|Pa|MPa|m³|L)/?\w*\b',
@@ -181,21 +186,21 @@ class AdvancedStatisticalExtractor:
         """
         candidates = defaultdict(int)
 
-        # 1. Mode C: 自然な複合語を長単位で抽出
-        mode_c_candidates = self._extract_with_mode_c(text)
-        for term, freq in mode_c_candidates.items():
-            candidates[term] += freq
-
-        # 2. Mode A + n-gram: 短単位からn-gram生成
-        ngram_candidates = self._extract_ngrams(text)
-        for term, freq in ngram_candidates.items():
-            candidates[term] += freq
-
-        # 3. 正規表現パターンマッチング
+        # 1. 正規表現パターンマッチング（最優先：括弧付き略語、型式番号など）
         if self.use_regex_patterns:
             pattern_candidates = self._extract_by_patterns(text)
             for term, freq in pattern_candidates.items():
                 candidates[term] += freq
+
+        # 2. Mode C: 自然な複合語を長単位で抽出
+        mode_c_candidates = self._extract_with_mode_c(text)
+        for term, freq in mode_c_candidates.items():
+            candidates[term] += freq
+
+        # 3. Mode A + n-gram: 短単位からn-gram生成
+        ngram_candidates = self._extract_ngrams(text)
+        for term, freq in ngram_candidates.items():
+            candidates[term] += freq
 
         # 4. 複合名詞の抽出（Mode A使用）
         compound_candidates = self._extract_compound_nouns(text)
@@ -277,6 +282,14 @@ class AdvancedStatisticalExtractor:
             matches = pattern.finditer(text)
             for match in matches:
                 term = match.group()
+
+                # 括弧を除去（（BMS） → BMS）
+                term = term.strip('（）()')
+
+                # コロン形式から略語部分のみ抽出（SFOC: Specific → SFOC）
+                if ':' in term:
+                    term = term.split(':')[0].strip()
+
                 if self._is_valid_term(term):
                     pattern_terms[term] += 1
 
@@ -352,6 +365,11 @@ class AdvancedStatisticalExtractor:
         generic_terms = {'エリア', 'モード'}
         if term in generic_terms:
             return False
+
+        # 英字略語は品詞チェックをスキップして自動承認（BMS、AVR、EMS、SFOC、NOx、CO2など）
+        abbreviation_pattern = re.compile(r'^[A-Z]{2,5}[0-9x]?$')
+        if abbreviation_pattern.match(term):
+            return True
 
         # 品詞チェック：名詞・接頭辞・接尾辞・記号（一部）のみ許可
         try:

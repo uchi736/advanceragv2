@@ -349,16 +349,137 @@ class RAGSystem:
             "golden_retriever": {}
         }
 
-    def extract_terms(self, input_dir: str | Path, output_json: str | Path) -> None:
+    def query_unified(
+        self,
+        question: str,
+        use_query_expansion: bool = False,
+        use_rag_fusion: bool = False,
+        use_jargon_augmentation: bool = False,
+        use_reranking: bool = False,
+        search_type: str = "ハイブリッド検索",
+        config: Any = None
+    ) -> Dict[str, Any]:
+        """Unified query method supporting all advanced RAG features.
+
+        Args:
+            question: User query
+            use_query_expansion: Enable query expansion
+            use_rag_fusion: Enable RAG fusion (query expansion + RRF)
+            use_jargon_augmentation: Enable jargon augmentation
+            use_reranking: Enable LLM reranking
+            search_type: Search type ("ハイブリッド検索", "ベクトル検索", "キーワード検索")
+            config: Optional RunnableConfig for tracing
+
+        Returns:
+            Dictionary with answer, sources, and metadata
+        """
+        from langchain_core.callbacks import get_openai_callback
+        from langchain_core.output_parsers import StrOutputParser
+        from src.rag.prompts import get_answer_generation_prompt
+
+        # Map Japanese search type to English
+        search_type_map = {
+            "ハイブリッド検索": "hybrid",
+            "ベクトル検索": "vector",
+            "キーワード検索": "keyword"
+        }
+        search_type_eng = search_type_map.get(search_type, "hybrid")
+
+        with get_openai_callback() as cb:
+            # Prepare input for retrieval chain
+            retrieval_input = {
+                "question": question,
+                "use_query_expansion": use_query_expansion,
+                "use_rag_fusion": use_rag_fusion,
+                "use_jargon_augmentation": use_jargon_augmentation,
+                "use_reranking": use_reranking,
+                "search_type": search_type_eng,
+                "config": config
+            }
+
+            # Execute retrieval chain (includes all advanced features)
+            retrieval_result = self.retrieval_chain.invoke(retrieval_input, config=config)
+
+            # Extract documents
+            documents = retrieval_result.get("documents", [])
+
+            # Format context for answer generation
+            def format_docs(docs):
+                return "\n\n---\n\n".join([doc.page_content for doc in docs])
+
+            context = format_docs(documents)
+
+            # Get jargon definitions if augmentation was used
+            jargon_definitions = ""
+            if use_jargon_augmentation and "jargon_augmentation" in retrieval_result:
+                jargon_info = retrieval_result["jargon_augmentation"]
+                if jargon_info.get("matched_terms"):
+                    jargon_definitions = "\n".join([
+                        f"- {term}: {info}"
+                        for term, info in jargon_info["matched_terms"].items()
+                    ])
+
+            # Generate answer using LLM
+            answer_prompt = get_answer_generation_prompt()
+            answer_chain = answer_prompt | self.llm | StrOutputParser()
+
+            answer = answer_chain.invoke({
+                "context": context,
+                "question": question,
+                "jargon_definitions": jargon_definitions
+            }, config=config)
+
+            # Check if SQL handler should be used
+            sql_details = None
+            if self.sql_handler:
+                try:
+                    sql_result = self.sql_handler.execute_nl_to_sql(
+                        question,
+                        self.sql_handler.multi_table_sql_chain
+                    )
+                    if sql_result and "error" not in sql_result:
+                        sql_details = sql_result
+                        # Optionally synthesize SQL + RAG answer here
+                except Exception as e:
+                    print(f"SQL execution error: {e}")
+
+            # Build sources from documents
+            sources = []
+            for doc in documents:
+                if hasattr(doc, 'metadata'):
+                    sources.append({
+                        "content": doc.page_content if hasattr(doc, 'page_content') else str(doc),
+                        "metadata": doc.metadata
+                    })
+
+            # Build result
+            result = {
+                "answer": answer,
+                "sources": sources,
+                "context": documents,
+                "total_tokens": cb.total_tokens if hasattr(cb, "total_tokens") else 0,
+                "retrieval_query": retrieval_result.get("retrieval_query", question),
+                "query_expansion": retrieval_result.get("query_expansion", {}),
+                "golden_retriever": retrieval_result.get("golden_retriever", {}),
+                "jargon_augmentation": retrieval_result.get("jargon_augmentation", {}),
+                "reranking": retrieval_result.get("reranking", {})
+            }
+
+            if sql_details:
+                result["sql_details"] = sql_details
+
+            return result
+
+    async def extract_terms(self, input_dir: str | Path, output_json: str | Path) -> None:
         from src.rag.term_extraction import run_extraction_pipeline
         # Use connection_string only if using PGVector, otherwise pass None
         pg_url = self.connection_string
-        asyncio.run(run_extraction_pipeline(
+        await run_extraction_pipeline(
             Path(input_dir), Path(output_json),
             self.config, self.llm, self.embeddings,
             self.vector_store, pg_url, self.config.jargon_table_name,
             jargon_manager=None
-        ))
+        )
         print(f"[TermExtractor] Extraction complete -> {output_json}")
 
     # --- Evaluation Methods ---

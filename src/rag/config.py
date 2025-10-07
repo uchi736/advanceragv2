@@ -121,4 +121,5 @@ class Config:
     definition_generation_percentile: float = float(os.getenv("DEFINITION_GENERATION_PERCENTILE", 50.0))  # 上位50%に定義生成
 
     # LLM filter settings
+    enable_lightweight_filter: bool = os.getenv("ENABLE_LIGHTWEIGHT_FILTER", "true").lower() == "true"  # 軽量フィルタ有効化
     llm_filter_batch_size: int = int(os.getenv("LLM_FILTER_BATCH_SIZE", 10))
