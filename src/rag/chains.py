@@ -106,11 +106,11 @@ def create_retrieval_chain(
                 augmented_query = query_augmentation_chain.invoke({"original_question": original_question, "jargon_definitions": defs_text})
                 augmentation_payload = {
                     "extracted_terms": jargon_terms,
-                    "matched_terms": list(jargon_defs.keys()),
+                    "matched_terms": jargon_defs,  # Dictionary, not list
                     "augmented_query": augmented_query
                 }
             else:
-                augmentation_payload = {"extracted_terms": jargon_terms, "matched_terms": [], "augmented_query": original_question}
+                augmentation_payload = {"extracted_terms": jargon_terms, "matched_terms": {}, "augmented_query": original_question}
 
         updated = {**input_dict, "retrieval_query": augmented_query}
         if augmentation_payload:

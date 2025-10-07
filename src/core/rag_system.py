@@ -275,7 +275,7 @@ class RAGSystem:
                 if self.config.enable_jargon_augmentation and "jargon_augmentation" in rag_results:
                     jargon_info = rag_results["jargon_augmentation"]
                     if jargon_info.get("matched_terms"):
-                        jargon_definitions = "\n".join([f"- {term}: {info}" for term, info in jargon_info["matched_terms"].items()])
+                        jargon_definitions = "\n".join([f"- {term}: {info['definition']}" for term, info in jargon_info["matched_terms"].items()])
 
                 # Format context
                 context = format_docs(rag_results.get("context", []))
@@ -373,7 +373,7 @@ class RAGSystem:
         Returns:
             Dictionary with answer, sources, and metadata
         """
-        from langchain_core.callbacks import get_openai_callback
+        from langchain_community.callbacks import get_openai_callback
         from langchain_core.output_parsers import StrOutputParser
         from src.rag.prompts import get_answer_generation_prompt
 
@@ -415,7 +415,7 @@ class RAGSystem:
                 jargon_info = retrieval_result["jargon_augmentation"]
                 if jargon_info.get("matched_terms"):
                     jargon_definitions = "\n".join([
-                        f"- {term}: {info}"
+                        f"- {term}: {info['definition']}"
                         for term, info in jargon_info["matched_terms"].items()
                     ])
 

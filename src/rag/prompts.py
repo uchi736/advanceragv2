@@ -94,6 +94,9 @@ ANSWER_GENERATION = """以下のコンテキスト情報を基に、質問に対
 コンテキスト:
 {context}
 
+専門用語定義（もしあれば）:
+{jargon_definitions}
+
 質問: {question}
 
 回答:"""
