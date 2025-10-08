@@ -25,62 +25,78 @@ def _format_docs(docs: List[Any]) -> str:
     """Helper function to format documents for context."""
     if not docs:
         return "コンテキスト情報が見つかりませんでした。"
-    
+
     formatted_docs = []
     for doc in docs:
         if hasattr(doc, 'page_content'):
             content = doc.page_content.strip()
             if content:
                 formatted_docs.append(content)
-    
+
     if not formatted_docs:
         return "ドキュメントが空です。"
-    
+
     return "\n\n".join(formatted_docs)
 
 def _reciprocal_rank_fusion(doc_lists: List[List[Any]], k=60) -> List[Any]:
     """Performs Reciprocal Rank Fusion on a list of document lists."""
     if not doc_lists:
         return []
-    
+
     fused_scores: Dict[str, float] = {}
     doc_map: Dict[str, Any] = {}
 
     for docs in doc_lists:
         for rank, doc in enumerate(docs):
-            doc_id = doc.metadata.get("chunk_id")
-            if not doc_id:
-                continue
-            
-            if doc_id not in doc_map:
-                doc_map[doc_id] = doc
-            
-            previous_score = fused_scores.get(doc_id, 0.0)
-            fused_scores[doc_id] = previous_score + 1.0 / (k + rank + 1)
+            doc_key = doc.page_content if hasattr(doc, 'page_content') else str(doc)
 
-    sorted_docs = sorted(fused_scores.keys(), key=lambda x: fused_scores[x], reverse=True)
-    return [doc_map[doc_id] for doc_id in sorted_docs]
+            if doc_key not in fused_scores:
+                fused_scores[doc_key] = 0
+                doc_map[doc_key] = doc
 
-def _combine_documents_simple(list_of_document_lists: List[List[Any]]) -> List[Any]:
-    """A simple combination of documents, preserving order and removing duplicates."""
-    if not list_of_document_lists:
+            fused_scores[doc_key] += 1 / (rank + k)
+
+    sorted_docs = sorted(
+        doc_map.values(),
+        key=lambda d: fused_scores[d.page_content if hasattr(d, 'page_content') else str(d)],
+        reverse=True
+    )
+
+    return sorted_docs
+
+def _rerank_documents_with_llm(docs: List[Any], question: str, llm, reranking_prompt) -> List[Any]:
+    """Reranks documents based on relevance to the question using LLM."""
+    if not docs:
         return []
-    
-    all_docs: List[Any] = []
-    seen_chunk_ids = set()
-    for doc_list in list_of_document_lists:
-        for doc in doc_list:
-            chunk_id = doc.metadata.get('chunk_id', '')
-            if chunk_id and chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk_id)
-                all_docs.append(doc)
-    
-    return all_docs
+
+    # Limit to top 20 docs for reranking to control cost
+    docs_to_rerank = docs[:20]
+
+    reranking_chain = reranking_prompt | llm | JsonOutputParser()
+
+    reranking_input = {
+        "question": question,
+        "documents": [
+            {"index": i, "content": doc.page_content[:500] if hasattr(doc, 'page_content') else str(doc)[:500]}
+            for i, doc in enumerate(docs_to_rerank)
+        ]
+    }
+
+    try:
+        rankings = reranking_chain.invoke(reranking_input)
+        reranked_indices = rankings.get("rankings", list(range(len(docs_to_rerank))))
+        reranked_docs = [docs_to_rerank[i] for i in reranked_indices if i < len(docs_to_rerank)]
+        # Add any remaining docs that weren't reranked
+        reranked_docs.extend(docs[20:])
+        return reranked_docs
+    except:
+        # If reranking fails, return original order
+        return docs
 
 def create_retrieval_chain(
-    llm: Runnable, 
-    retriever: JapaneseHybridRetriever, 
-    jargon_manager: JargonDictionaryManager, 
+    llm: Runnable,
+    retriever: JapaneseHybridRetriever,
+    jargon_manager: JargonDictionaryManager,
     config_obj: Any
 ) -> Runnable:
     """
@@ -93,24 +109,46 @@ def create_retrieval_chain(
     query_augmentation_chain = query_augmentation_prompt | llm | StrOutputParser()
 
     def augment_query_with_jargon(input_dict: dict) -> dict:
+        from .reverse_lookup import ReverseLookupEngine
+
         original_question = input_dict["question"]
         jargon_terms = jargon_extraction_chain.invoke({"question": original_question, "max_terms": config_obj.max_jargon_terms_per_query}).split('\n')
         jargon_terms = [t.strip() for t in jargon_terms if t.strip()]
+
+        # Initialize reverse lookup engine
+        reverse_engine = ReverseLookupEngine(
+            jargon_manager=jargon_manager,
+            vector_store=getattr(retriever, 'vector_store', None)
+        )
+
+        # Perform reverse lookup to find technical terms from descriptions
+        reverse_results = reverse_engine.reverse_lookup(original_question, top_k=5)
+        reverse_terms = [r.term for r in reverse_results if r.confidence > 0.5]
+
+        # Combine forward extracted terms and reverse lookup terms
+        all_terms = list(set(jargon_terms + reverse_terms))
+
         augmented_query = original_question
         augmentation_payload = input_dict.get("jargon_augmentation", {})
 
-        if jargon_terms:
-            jargon_defs = jargon_manager.lookup_terms(jargon_terms)
+        if all_terms:
+            jargon_defs = jargon_manager.lookup_terms(all_terms)
             if jargon_defs:
                 defs_text = "\n".join([f"- {term}: {info['definition']}" for term, info in jargon_defs.items()])
                 augmented_query = query_augmentation_chain.invoke({"original_question": original_question, "jargon_definitions": defs_text})
                 augmentation_payload = {
                     "extracted_terms": jargon_terms,
-                    "matched_terms": jargon_defs,  # Dictionary, not list
+                    "reverse_terms": reverse_terms,
+                    "matched_terms": jargon_defs,
                     "augmented_query": augmented_query
                 }
             else:
-                augmentation_payload = {"extracted_terms": jargon_terms, "matched_terms": {}, "augmented_query": original_question}
+                augmentation_payload = {
+                    "extracted_terms": jargon_terms,
+                    "reverse_terms": reverse_terms,
+                    "matched_terms": {},
+                    "augmented_query": original_question
+                }
 
         updated = {**input_dict, "retrieval_query": augmented_query}
         if augmentation_payload:
@@ -118,7 +156,7 @@ def create_retrieval_chain(
         return updated
 
     query_expansion_prompt = get_query_expansion_prompt()
-    
+
     def expand_query(input_dict):
         result = (query_expansion_prompt | llm | StrOutputParser()).invoke(input_dict)
         expanded_queries = [q.strip() for q in result.split('\n') if q.strip()]
@@ -126,88 +164,185 @@ def create_retrieval_chain(
         if input_dict.get("question") and input_dict["question"] not in expanded_queries:
             expanded_queries.insert(0, input_dict["question"])
         return expanded_queries
-    
-    query_expansion_chain = RunnableLambda(expand_query)
 
-    def get_retriever_with_search_type(input_or_config: Any):
-        search_type = "ハイブリッド検索"
-        if isinstance(input_or_config, dict) and "configurable" in input_or_config:
-             search_type = input_or_config.get("configurable", {}).get("search_type", "ハイブリッド検索")
-        return retriever.with_config(configurable={"search_type": search_type})
+    def retrieve_with_optional_fusion(input_dict):
+        use_query_expansion = input_dict.get("use_query_expansion", False)
+        use_rag_fusion = input_dict.get("use_rag_fusion", False)
+        search_type = input_dict.get("search_type", "hybrid")
 
-    def get_docs_for_batch(input_dict):
-        """Batch retrieve documents for expanded queries"""
-        expanded_queries = input_dict.get("expanded_queries", [])
-        search_type = input_dict.get("search_type", "ハイブリッド検索")
-        config = input_dict.get("config")
-        
-        if not expanded_queries:
-            return []
-        
-        retriever_with_config = retriever.with_config(configurable={"search_type": search_type})
-        doc_lists = retriever_with_config.batch(expanded_queries, config)
-        return doc_lists
+        query = input_dict.get("retrieval_query", input_dict["question"])
 
-    expansion_retrieval_chain = RunnablePassthrough.assign(
-        expanded_queries=query_expansion_chain
-    ).assign(
-        doc_lists=RunnableLambda(get_docs_for_batch)
-    ).assign(
-        documents=RunnableBranch(
-            (lambda x: x.get("use_rag_fusion"), itemgetter("doc_lists") | RunnableLambda(_reciprocal_rank_fusion)),
-            itemgetter("doc_lists") | RunnableLambda(_combine_documents_simple)
-        )
-    )
+        if use_rag_fusion:
+            # RAG Fusion: expand query and perform RRF
+            expanded_queries = expand_query(input_dict)
+            doc_lists = []
+            for q in expanded_queries[:5]:  # Limit to 5 queries
+                docs = retriever.invoke({"query": q, "search_type": search_type})
+                doc_lists.append(docs)
+            fused_docs = _reciprocal_rank_fusion(doc_lists)
+            input_dict["query_expansion"] = {"queries": expanded_queries[:5], "method": "rag_fusion"}
+            return fused_docs
+        elif use_query_expansion:
+            # Simple query expansion (concatenate)
+            expanded_queries = expand_query(input_dict)
+            combined_query = " ".join(expanded_queries[:3])
+            input_dict["query_expansion"] = {"queries": expanded_queries[:3], "method": "simple"}
+            return retriever.invoke({"query": combined_query, "search_type": search_type})
+        else:
+            # Direct retrieval
+            return retriever.invoke({"query": query, "search_type": search_type})
 
-    standard_retrieval_chain = RunnablePassthrough.assign(
-        documents=lambda x: retriever.with_config(configurable={"search_type": x.get("search_type")}).invoke(x["retrieval_query"], x.get("config"))
-    )
-
-    reranking_prompt = get_reranking_prompt()
-    reranking_chain = reranking_prompt | llm | StrOutputParser()
-
-    def rerank_documents(input_dict: dict) -> List[Any]:
+    def rerank_if_enabled(input_dict):
         docs = input_dict["documents"]
-        if not docs: return []
-        docs_for_rerank = [f"ドキュメント {i}:\n{doc.page_content}" for i, doc in enumerate(docs)]
-        rerank_input = {"question": input_dict["question"], "documents": "\n\n---\n\n".join(docs_for_rerank)}
-        try:
-            reranked_indices_str = reranking_chain.invoke(rerank_input)
-            reranked_indices = [int(i.strip()) for i in reranked_indices_str.split(',') if i.strip().isdigit()]
-            reranked_docs = [docs[i] for i in reranked_indices if i < len(docs)]
-            if reranked_indices:
-                input_dict["reranking"] = {
-                    "original_order": list(range(len(docs))),
-                    "reranked_order": reranked_indices,
-                    "applied": True
-                }
-            return reranked_docs if reranked_docs else docs
-        except Exception:
-            input_dict.setdefault("reranking", {"applied": False})
+        use_reranking = input_dict.get("use_reranking", False)
+
+        if use_reranking and docs:
+            reranking_prompt = get_reranking_prompt()
+            question = input_dict.get("question")
+            reranked = _rerank_documents_with_llm(docs, question, llm, reranking_prompt)
+            input_dict["reranking"] = {"enabled": True, "original_count": len(docs), "reranked_count": len(reranked)}
+            return reranked
+        else:
+            input_dict["reranking"] = {"enabled": False}
             return docs
 
-    retrieval_and_rerank_chain = (
-        RunnableBranch(
-            (lambda x: x.get("use_jargon_augmentation"), RunnableLambda(augment_query_with_jargon)),
-            RunnablePassthrough.assign(retrieval_query=itemgetter("question"))
-        )
-        | RunnableBranch(
-            (lambda x: x.get("use_rag_fusion") or x.get("use_query_expansion"), expansion_retrieval_chain),
-            standard_retrieval_chain
+    # Conditional jargon augmentation
+    jargon_branch = RunnableBranch(
+        (
+            lambda x: x.get("use_jargon_augmentation", False),
+            RunnableLambda(augment_query_with_jargon)
+        ),
+        # Default: pass through
+        RunnablePassthrough()
+    )
+
+    # Build the retrieval chain
+    retrieval_chain = (
+        RunnablePassthrough()
+        | jargon_branch
+        | RunnablePassthrough.assign(
+            documents=RunnableLambda(retrieve_with_optional_fusion)
         )
         | RunnablePassthrough.assign(
-            documents=RunnableBranch(
-                (lambda x: x.get("use_reranking"), RunnableLambda(rerank_documents)),
-                itemgetter("documents")
-            )
+            documents=RunnableLambda(rerank_if_enabled)
         )
     )
-    return retrieval_and_rerank_chain
+
+    return retrieval_chain
+
+
+def create_sql_chain(llm: Runnable, sql_handler: Any) -> Runnable:
+    """
+    Creates a chain for natural language to SQL conversion and execution.
+    """
+    if not sql_handler:
+        return None
+
+    multi_table_prompt = get_multi_table_text_to_sql_prompt(sql_handler.multi_table_schema)
+    sql_generation_chain = multi_table_prompt | llm | StrOutputParser()
+
+    def execute_sql_query(input_dict: dict) -> dict:
+        """Execute SQL query and return results."""
+        question = input_dict["question"]
+
+        try:
+            # Generate SQL
+            sql_query = sql_generation_chain.invoke({"question": question})
+
+            # Execute SQL
+            results = sql_handler.execute_query(sql_query)
+
+            # Generate answer from SQL results
+            sql_answer_prompt = get_sql_answer_generation_prompt()
+            sql_answer_chain = sql_answer_prompt | llm | StrOutputParser()
+
+            answer = sql_answer_chain.invoke({
+                "question": question,
+                "sql_query": sql_query,
+                "results": results
+            })
+
+            return {
+                "sql_query": sql_query,
+                "results": results,
+                "answer": answer,
+                "status": "success"
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "status": "failed"
+            }
+
+    return RunnableLambda(execute_sql_query)
+
+
+def create_hybrid_chain(
+    llm: Runnable,
+    retriever: JapaneseHybridRetriever,
+    jargon_manager: JargonDictionaryManager,
+    sql_handler: Any,
+    config_obj: Any
+) -> Runnable:
+    """
+    Creates a hybrid chain that combines retrieval and SQL capabilities.
+    """
+    retrieval_chain = create_retrieval_chain(llm, retriever, jargon_manager, config_obj)
+    sql_chain = create_sql_chain(llm, sql_handler) if sql_handler else None
+
+    # Router to determine whether to use SQL, RAG, or both
+    router_prompt = get_semantic_router_prompt()
+    router_chain = router_prompt | llm | JsonOutputParser()
+
+    def route_query(input_dict: dict) -> dict:
+        """Route query to appropriate handler(s)."""
+        question = input_dict["question"]
+
+        # Get routing decision
+        routing = router_chain.invoke({"question": question})
+        route_type = routing.get("route", "retrieval")
+
+        result = {"question": question}
+
+        if route_type == "sql" and sql_chain:
+            # SQL only
+            sql_result = sql_chain.invoke(input_dict)
+            result["sql_result"] = sql_result
+            result["documents"] = []
+        elif route_type == "both" and sql_chain:
+            # Both SQL and retrieval
+            retrieval_result = retrieval_chain.invoke(input_dict)
+            sql_result = sql_chain.invoke(input_dict)
+            result.update(retrieval_result)
+            result["sql_result"] = sql_result
+
+            # Synthesize answers if both succeeded
+            if sql_result.get("status") == "success" and retrieval_result.get("documents"):
+                synthesis_prompt = get_synthesis_prompt()
+                synthesis_chain = synthesis_prompt | llm | StrOutputParser()
+
+                synthesized = synthesis_chain.invoke({
+                    "question": question,
+                    "rag_answer": _format_docs(retrieval_result["documents"]),
+                    "sql_answer": sql_result["answer"]
+                })
+                result["synthesized_answer"] = synthesized
+        else:
+            # Retrieval only (default)
+            retrieval_result = retrieval_chain.invoke(input_dict)
+            result.update(retrieval_result)
+            result["sql_result"] = None
+
+        result["route"] = route_type
+        return result
+
+    return RunnableLambda(route_query)
+
 
 def create_full_rag_chain(retrieval_chain: Runnable, llm: Runnable) -> Runnable:
     """Creates the final answer generation part of the RAG chain."""
     answer_generation_prompt = get_answer_generation_prompt()
-    
+
     full_chain = (
         retrieval_chain
         | RunnablePassthrough.assign(
@@ -220,6 +355,7 @@ def create_full_rag_chain(retrieval_chain: Runnable, llm: Runnable) -> Runnable:
         )
     )
     return full_chain
+
 
 def create_chains(llm, max_sql_results: int) -> dict:
     """Creates and returns a dictionary of all LangChain runnables for SQL and Synthesis."""
