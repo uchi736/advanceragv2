@@ -278,7 +278,7 @@ def _render_sources():
             # Handle both dict and Document objects
             if isinstance(source, dict):
                 metadata = source.get('metadata', {})
-                page_content = source.get('page_content', '')
+                page_content = source.get('content', '')  # RAG system returns 'content' key
             else:
                 metadata = source.metadata if hasattr(source, 'metadata') else {}
                 page_content = source.page_content if hasattr(source, 'page_content') else ''
