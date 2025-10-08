@@ -7,7 +7,7 @@ from typing import List
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain_community.document_loaders import TextLoader, Docx2txtLoader
-from src.utils.text_processor import JapaneseTextProcessor
+from src.rag.text_processor import JapaneseTextProcessor
 from sqlalchemy import text
 
 
