@@ -314,7 +314,10 @@ def _render_sources():
 
                     if st.session_state.get(show_full_text_key, False):
                         full_text = page_content
-                        st.markdown(f"""<div class="full-text-container">{full_text}</div>""", unsafe_allow_html=True)
+                        if full_text and full_text.strip():
+                            st.markdown(f"""<div class="full-text-container" style="padding: 1rem; background-color: #2b2b2b; border-radius: 0.5rem; margin-top: 1rem;">{full_text}</div>""", unsafe_allow_html=True)
+                        else:
+                            st.warning("全文データが見つかりません。")
     else:
         st.info("RAG検索が実行されると、参照したソースがここに表示されます。")
 
