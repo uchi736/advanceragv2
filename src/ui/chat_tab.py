@@ -275,7 +275,14 @@ def _render_sources():
     st.markdown("""<div style="position: sticky; top: 1rem;"><h4 style="color: var(--text-primary); margin-bottom: 1rem;">📚 参照ソース (RAG)</h4></div>""", unsafe_allow_html=True)
     if st.session_state.current_sources:
         for i, source in enumerate(st.session_state.current_sources):
-            metadata = source.metadata
+            # Handle both dict and Document objects
+            if isinstance(source, dict):
+                metadata = source.get('metadata', {})
+                page_content = source.get('page_content', '')
+            else:
+                metadata = source.metadata if hasattr(source, 'metadata') else {}
+                page_content = source.page_content if hasattr(source, 'page_content') else ''
+
             doc_id = metadata.get('document_id', 'Unknown Document')
             chunk_id_val = metadata.get('chunk_id', f'N/A_{i}')
             source_type = metadata.get('type', 'text')
@@ -289,24 +296,24 @@ def _render_sources():
             with st.expander(header_text, expanded=False):
                 if source_type == 'image_summary':
                     st.markdown("**画像要約:**")
-                    st.markdown(f"<div class='source-excerpt'>{source.page_content}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='source-excerpt'>{page_content}</div>", unsafe_allow_html=True)
                     image_path = metadata.get("original_image_path")
                     if image_path and os.path.exists(image_path):
                         st.image(image_path, caption=f"元画像: {os.path.basename(image_path)}")
                     else:
                         st.warning("画像ファイルが見つかりませんでした。")
                 else:
-                    excerpt = source.page_content[:200] + "..." if len(source.page_content) > 200 else source.page_content
+                    excerpt = page_content[:200] + "..." if len(page_content) > 200 else page_content
                     st.markdown(f"""<div class="source-excerpt" style="margin-bottom: 1rem;">{excerpt}</div>""", unsafe_allow_html=True)
-                    
+
                     button_key = f"full_text_btn_chat_{st.session_state.session_id}_{chunk_id_val}_tab_chat"
                     show_full_text_key = f"show_full_chat_{st.session_state.session_id}_{chunk_id_val}_tab_chat"
 
                     if st.button(f"全文を表示##{chunk_id_val}", key=button_key):
                         st.session_state[show_full_text_key] = not st.session_state.get(show_full_text_key, False)
-                    
+
                     if st.session_state.get(show_full_text_key, False):
-                        full_text = source.page_content
+                        full_text = page_content
                         st.markdown(f"""<div class="full-text-container">{full_text}</div>""", unsafe_allow_html=True)
     else:
         st.info("RAG検索が実行されると、参照したソースがここに表示されます。")
