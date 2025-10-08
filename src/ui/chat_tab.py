@@ -309,7 +309,7 @@ def _render_sources():
                     button_key = f"full_text_btn_chat_{st.session_state.session_id}_{chunk_id_val}_tab_chat"
                     show_full_text_key = f"show_full_chat_{st.session_state.session_id}_{chunk_id_val}_tab_chat"
 
-                    if st.button(f"全文を表示##{chunk_id_val}", key=button_key):
+                    if st.button("全文を表示", key=button_key):
                         st.session_state[show_full_text_key] = not st.session_state.get(show_full_text_key, False)
 
                     if st.session_state.get(show_full_text_key, False):
