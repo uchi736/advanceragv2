@@ -77,7 +77,7 @@ def _render_model_identifiers(values, defaults):
     emb_idx = emb_opts.index(current_emb) if current_emb in emb_opts else 0
     st.session_state.form_values['embedding_model_identifier'] = st.selectbox("埋め込みモデル識別子", emb_opts, index=emb_idx, key="setting_emb_model_id_v7")
 
-    llm_opts = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"]
+    llm_opts = ["gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"]
     current_llm = values.get("llm_model_identifier", defaults.llm_model_identifier)
     llm_idx = llm_opts.index(current_llm) if current_llm in llm_opts else 0
     st.session_state.form_values['llm_model_identifier'] = st.selectbox("言語モデル識別子", llm_opts, index=llm_idx, key="setting_llm_model_id_v7")
