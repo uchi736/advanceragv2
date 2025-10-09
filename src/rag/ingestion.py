@@ -4,7 +4,7 @@ Document ingestion handler with improved batch processing and connection managem
 import json
 from pathlib import Path
 from typing import List
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain.schema import Document
 from langchain_community.document_loaders import TextLoader, Docx2txtLoader
 from src.rag.text_processor import JapaneseTextProcessor
@@ -25,8 +25,8 @@ class IngestionHandler:
             from src.rag.pdf_processors.pymupdf_processor import PyMuPDFProcessor
             self.pdf_processor = PyMuPDFProcessor()
         elif config.pdf_processor_type == "azure_di":
-            from src.rag.pdf_processors.azure_di_processor import AzureDIProcessor
-            self.pdf_processor = AzureDIProcessor(config)
+            from src.rag.pdf_processors.azure_di_processor import AzureDocumentIntelligenceProcessor
+            self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
         else:
             # Use legacy processor
             from src.rag.pdf_processors.legacy_processor import LegacyProcessor
@@ -78,29 +78,56 @@ class IngestionHandler:
             return self._chunk_documents_parent_child(docs)
 
     def _chunk_documents_standard(self, docs: List[Document]) -> List[Document]:
+        headers_to_split_on = [
+            ("#", "Header 1"),
+            ("##", "Header 2"),
+            ("###", "Header 3"),
+        ]
+        markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+        
+        # Fallback splitter for content without headers
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap
         )
+
         all_chunks = []
+        chunk_counter = 0
         for i, d in enumerate(docs):
             src = d.metadata.get("source", f"doc_source_{i}")
             doc_id = Path(src).name
             try:
+                # Normalize text content first
                 normalized_content = self.text_processor.normalize_text(d.page_content)
-                d.page_content = normalized_content
+                
+                # Split by markdown headers
+                md_header_splits = markdown_splitter.split_text(normalized_content)
+                
+                # Further split chunks that are too large
+                for split in md_header_splits:
+                    if len(split.page_content) > self.config.chunk_size:
+                        sub_chunks = text_splitter.split_documents([split])
+                        for sub_chunk in sub_chunks:
+                            # Ensure metadata from header split is preserved
+                            sub_chunk.metadata.update(split.metadata)
+                            all_chunks.append(sub_chunk)
+                    else:
+                        all_chunks.append(split)
 
-                split_docs = text_splitter.split_documents([d])
-                for j, chunk in enumerate(split_docs):
-                    chunk.metadata["chunk_id"] = f"{doc_id}_chunk_{j}"
-                    chunk.metadata["document_id"] = doc_id
-                    chunk.metadata["chunk_index"] = j
-                    chunk.metadata["is_parent"] = False
-                all_chunks.extend(split_docs)
             except Exception as e:
                 print(f"Error chunking document {doc_id}: {e}")
                 continue
 
+        # Add final metadata to all chunks
+        for chunk in all_chunks:
+            src = chunk.metadata.get("source", docs[0].metadata.get("source", "unknown_source"))
+            doc_id = Path(src).name
+            chunk.metadata["chunk_id"] = f"{doc_id}_chunk_{chunk_counter}"
+            chunk.metadata["document_id"] = doc_id
+            chunk.metadata["chunk_index"] = chunk_counter
+            chunk.metadata["is_parent"] = False
+            chunk_counter += 1
+            
         return all_chunks
 
     def _chunk_documents_parent_child(self, docs: List[Document]) -> List[Document]:

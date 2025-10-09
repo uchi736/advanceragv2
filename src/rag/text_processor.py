@@ -136,9 +136,30 @@ class JapaneseTextProcessor:
         return list(set(keywords))  # Remove duplicates
     
     def normalize_text(self, text: str) -> str:
-        """Normalizes text (e.g., full-width to half-width)."""
+        """
+        Normalizes text, focusing on removing OCR artifacts like unwanted spaces in Japanese text.
+        """
         # NFKC normalization (converts full-width chars to half-width)
         text = unicodedata.normalize('NFKC', text)
-        # Replace multiple whitespaces with a single space
+
+        # Step 1: Unify all whitespace-like characters (including newlines, tabs) to a single space
+        text = re.sub(r'[\s\n\t]+', ' ', text)
+
+        # Step 2: Remove spaces adjacent to any Japanese character (Kanji, Hiragana, Katakana)
+        # This is a more aggressive and robust approach.
+        text = re.sub(r'([ぁ-んァ-ヴー一-龠])\s', r'\1', text)
+        text = re.sub(r'\s([ぁ-んァ-ヴー一-龠])', r'\1', text)
+
+        # Step 3: Remove spaces around punctuation and brackets
+        text = re.sub(r'\s*([（(])\s*', r'\1', text)
+        text = re.sub(r'\s*([)）])\s*', r'\1', text)
+        text = re.sub(r'\s*([、。，．])\s*', r'\1', text)
+        text = re.sub(r'\s*([:])\s*', r'\1', text)
+
+        # Step 4: Remove spaces between numbers and Japanese characters (e.g., "2050 年" -> "2050年")
+        text = re.sub(r'(\d)\s+([ぁ-んァ-ヴー一-龠])', r'\1\2', text)
+
+        # Collapse any remaining multiple whitespaces (for English parts)
         text = re.sub(r'\s+', ' ', text)
+        
         return text.strip()

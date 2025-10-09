@@ -87,9 +87,8 @@ class RAGSystem:
         self.ingestion_handler = IngestionHandler(
             cfg,
             self.vector_store,
-            self.text_processor,
-            self.connection_string,
-            engine=self.engine
+            self.engine,
+            self.text_processor
         )
         self.sql_handler = SQLHandler(cfg, self.llm, self.connection_string, engine=self.engine)
 

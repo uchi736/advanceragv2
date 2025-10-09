@@ -4,7 +4,19 @@
       "Bash(myenvScriptspython.exe test_reverse_lookup.py)",
       "Bash(myenv/Scripts/python.exe test_reverse_lookup.py:*)",
       "Bash(myenv/Scripts/python.exe test_reverse_integration.py:*)",
-      "Bash(myenv/Scripts/python.exe test_reverse_in_chains.py:*)"
+      "Bash(myenv/Scripts/python.exe test_reverse_in_chains.py:*)",
+      "Bash(myenv/Scripts/python.exe test_term_validation.py:*)",
+      "Bash(cat:*)",
+      "Bash(myenv/Scripts/streamlit.exe run src/ui/app.py)",
+      "Bash(myenv/Scripts/streamlit.exe run app.py)",
+      "Bash(myenv\\Scripts\\python.exe test_independent_term_filtering.py:*)",
+      "Bash(myenv/Scripts/python.exe test_independent_term_filtering.py:*)",
+      "Bash(myenv/Scripts/python.exe test_independent_debug.py:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git reset:*)",
+      "Bash(git push:*)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "ask": []
