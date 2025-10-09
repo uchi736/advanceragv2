@@ -525,7 +525,7 @@ class TermExtractor:
         documents = self._split_into_sentences(full_text)
 
         tfidf_scores = self.statistical_extractor.calculate_tfidf(documents, all_candidates)
-        cvalue_scores = self.statistical_extractor.calculate_cvalue(all_candidates)
+        cvalue_scores = self.statistical_extractor.calculate_cvalue(all_candidates, full_text=full_text)
 
         # 3. 基底スコア計算（2段階）
         seed_scores = self.statistical_extractor.calculate_combined_scores(

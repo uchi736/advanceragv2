@@ -23,7 +23,7 @@ class IngestionHandler:
         # Initialize PDF processor based on config
         if config.pdf_processor_type == "pymupdf":
             from src.rag.pdf_processors.pymupdf_processor import PyMuPDFProcessor
-            self.pdf_processor = PyMuPDFProcessor()
+            self.pdf_processor = PyMuPDFProcessor(config)
         elif config.pdf_processor_type == "azure_di":
             from src.rag.pdf_processors.azure_di_processor import AzureDocumentIntelligenceProcessor
             self.pdf_processor = AzureDocumentIntelligenceProcessor(config)

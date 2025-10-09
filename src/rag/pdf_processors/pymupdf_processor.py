@@ -34,19 +34,22 @@ class PyMuPDFProcessor(BasePDFProcessor):
         
         if not os.path.exists(self.image_output_dir):
             os.makedirs(self.image_output_dir)
-        
-        # Initialize the LLM for image summarization using Azure
-        if not all([config.azure_openai_api_key, config.azure_openai_endpoint, config.azure_openai_chat_deployment_name]):
-            raise ValueError("Azure OpenAI credentials for Chat are not fully configured for PyMuPDFProcessor.")
-        
-        self.llm = AzureChatOpenAI(
-            azure_endpoint=config.azure_openai_endpoint,
-            api_key=config.azure_openai_api_key,
-            api_version=config.azure_openai_api_version,
-            azure_deployment=config.azure_openai_chat_deployment_name,
-            temperature=0.1,  # Lower temperature for more factual summaries
-            max_tokens=512
-        )
+
+        # Initialize the LLM for image summarization using Azure (optional)
+        if all([config.azure_openai_api_key, config.azure_openai_endpoint, config.azure_openai_chat_deployment_name]):
+            self.llm = AzureChatOpenAI(
+                azure_endpoint=config.azure_openai_endpoint,
+                api_key=config.azure_openai_api_key,
+                api_version=config.azure_openai_api_version,
+                azure_deployment=config.azure_openai_chat_deployment_name,
+                temperature=0.1,  # Lower temperature for more factual summaries
+                max_tokens=512
+            )
+        else:
+            self.llm = None
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("Azure OpenAI not configured. Image summarization will be disabled.")
     
     def parse_pdf(self, file_path: str) -> Dict[str, List[Any]]:
         """
@@ -127,13 +130,16 @@ class PyMuPDFProcessor(BasePDFProcessor):
     def summarize_image(self, image_path: str) -> str:
         """
         画像の内容を要約（Azure OpenAIを使用）
-        
+
         Args:
             image_path: 画像ファイルのパス
-            
+
         Returns:
             画像の要約テキスト
         """
+        if not self.llm:
+            return "画像要約機能が利用できません（Azure OpenAI未設定）"
+
         try:
             with open(image_path, "rb") as image_file:
                 image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
@@ -150,7 +156,7 @@ class PyMuPDFProcessor(BasePDFProcessor):
                     },
                 ]
             )
-            
+
             response = self.llm.invoke([message])
             return response.content
         except Exception as e:
