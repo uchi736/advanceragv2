@@ -62,11 +62,20 @@ class RAGSystem:
 
         # Create PGVector store
         from langchain_community.vectorstores.pgvector import DistanceStrategy
+        # Convert distance_strategy string to enum
+        distance_strategy_str = getattr(cfg, 'distance_strategy', 'COSINE').upper()
+        distance_strategy_map = {
+            'COSINE': DistanceStrategy.COSINE,
+            'EUCLIDEAN': DistanceStrategy.EUCLIDEAN,
+            'MAX_INNER_PRODUCT': DistanceStrategy.MAX_INNER_PRODUCT
+        }
+        distance_strategy = distance_strategy_map.get(distance_strategy_str, DistanceStrategy.COSINE)
+
         self.vector_store = PGVector(
             connection_string=self.connection_string,
             embedding_function=self.embeddings,
             collection_name=cfg.collection_name,
-            distance_strategy=getattr(cfg, 'distance_strategy', DistanceStrategy.COSINE)
+            distance_strategy=distance_strategy
         )
 
         # Use Japanese hybrid retriever for PGVector
