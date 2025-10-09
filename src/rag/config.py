@@ -65,6 +65,10 @@ class Config:
             # Keep jargon extraction enabled as we now support it with ChromaDB
         
 
+    # LLM Settings
+    llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+    max_tokens: int = int(os.getenv("MAX_TOKENS", "4096"))
+
     # RAG and Search settings
     enable_parent_child_chunking: bool = os.getenv("ENABLE_PARENT_CHILD_CHUNKING", "false").lower() == "true"
     parent_chunk_size: int = int(os.getenv("PARENT_CHUNK_SIZE", 2000))
