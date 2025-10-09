@@ -32,6 +32,18 @@ class Config:
         self.db_user = os.getenv("DB_USER", "postgres")
         self.db_password = os.getenv("DB_PASSWORD", "your-password")
 
+        # Build PGVector connection string
+        try:
+            import psycopg
+            _PG_DIALECT = "psycopg"
+        except ModuleNotFoundError:
+            _PG_DIALECT = "psycopg2"
+
+        self.pgvector_connection_string = (
+            f"postgresql+{_PG_DIALECT}://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
+
         # Load OpenAI settings
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.embedding_model_identifier = os.getenv("EMBEDDING_MODEL_IDENTIFIER", "text-embedding-3-small")
