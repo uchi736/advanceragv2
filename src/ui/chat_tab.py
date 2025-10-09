@@ -283,6 +283,9 @@ def _render_sources():
                 metadata = source.metadata if hasattr(source, 'metadata') else {}
                 page_content = source.page_content if hasattr(source, 'page_content') else ''
 
+            # Ensure metadata is a dict (could be None)
+            if not isinstance(metadata, dict):
+                metadata = {}
             doc_id = metadata.get('document_id', 'Unknown Document')
             chunk_id_val = metadata.get('chunk_id', f'N/A_{i}')
             source_type = metadata.get('type', 'text')

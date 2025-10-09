@@ -19,6 +19,24 @@ class SQLHandler:
         self.single_table_sql_chain: Optional[RunnableSequence] = None
         self.multi_table_sql_chain: Optional[RunnableSequence] = None
         self.sql_answer_generation_chain: Optional[RunnableSequence] = None
+        self._cached_multi_table_schema: Optional[str] = None
+
+    @property
+    def multi_table_schema(self) -> str:
+        """Get schema for all user tables (cached)."""
+        if self._cached_multi_table_schema:
+            return self._cached_multi_table_schema
+
+        tables_data = self.get_data_tables()
+        if not tables_data:
+            return "No user tables found."
+
+        schema_parts = []
+        for table in tables_data:
+            schema_parts.append(table.get('schema', ''))
+
+        self._cached_multi_table_schema = "\n\n".join(schema_parts)
+        return self._cached_multi_table_schema
 
     def create_table_from_file(self, file_path: str, table_name: Optional[str] = None) -> tuple[bool, str, str]:
         try:

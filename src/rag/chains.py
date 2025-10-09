@@ -177,7 +177,8 @@ def create_retrieval_chain(
             expanded_queries = expand_query(input_dict)
             doc_lists = []
             for q in expanded_queries[:5]:  # Limit to 5 queries
-                docs = retriever.invoke({"query": q, "search_type": search_type})
+                # retriever.invoke() expects string, not dict
+                docs = retriever.invoke(q)
                 doc_lists.append(docs)
             fused_docs = _reciprocal_rank_fusion(doc_lists)
             input_dict["query_expansion"] = {"queries": expanded_queries[:5], "method": "rag_fusion"}
@@ -187,10 +188,12 @@ def create_retrieval_chain(
             expanded_queries = expand_query(input_dict)
             combined_query = " ".join(expanded_queries[:3])
             input_dict["query_expansion"] = {"queries": expanded_queries[:3], "method": "simple"}
-            return retriever.invoke({"query": combined_query, "search_type": search_type})
+            # retriever.invoke() expects string, not dict
+            return retriever.invoke(combined_query)
         else:
             # Direct retrieval
-            return retriever.invoke({"query": query, "search_type": search_type})
+            # retriever.invoke() expects string, not dict
+            return retriever.invoke(query)
 
     def rerank_if_enabled(input_dict):
         docs = input_dict["documents"]
