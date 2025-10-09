@@ -326,8 +326,16 @@ class AdvancedStatisticalExtractor:
 
     def _is_valid_term(self, term: str) -> bool:
         """用語の妥当性チェック（文字列 + 品詞ベース）"""
-        # 空文字列チェック
-        if not term or len(term) < 2:
+        # 空文字列・最小文字数チェック（3文字未満除外）
+        if not term or len(term) < 3:
+            return False
+
+        # 助詞・助動詞ブラックリスト
+        particles = {
+            'の', 'に', 'が', 'を', 'は', 'で', 'と', 'から', 'まで', 'より',
+            'へ', 'や', 'も', 'て', 'ば', 'ない', 'だ', 'です', 'ます', 'である'
+        }
+        if term in particles:
             return False
 
         # HTMLタグ除外（小文字のタグ名）
@@ -361,8 +369,13 @@ class AdvancedStatisticalExtractor:
         if re.match(r'^\d+$', term):
             return False
 
-        # 超汎用的な単語のみ除外（最小限）
-        generic_terms = {'エリア', 'モード'}
+        # 汎用語ブラックリスト拡充
+        generic_terms = {
+            'エリア', 'モード', 'こと', 'もの', 'ため', 'よう', 'など',
+            'について', 'により', 'における', 'として', 'による',
+            'それ', 'これ', 'あれ', 'その', 'この', 'あの',
+            'とき', 'とこ', 'ところ', 'ほか', 'さらに', 'また', 'および'
+        }
         if term in generic_terms:
             return False
 
@@ -374,9 +387,24 @@ class AdvancedStatisticalExtractor:
         # 品詞チェック：名詞・接頭辞・接尾辞・記号（一部）のみ許可
         try:
             tokens = self._safe_tokenize(term, self.sudachi_mode_a)
+
+            # 不完全語検出: 形態素で再構成できるかチェック
+            reconstructed = ''.join([t.surface() for t in tokens])
+            if reconstructed != term:
+                logger.debug(f"Incomplete term detected: {term} != {reconstructed}")
+                return False
+
             for token in tokens:
                 pos = token.part_of_speech()[0]
                 pos_sub = token.part_of_speech()[1] if len(token.part_of_speech()) > 1 else ''
+
+                # 助詞・助動詞を明示的除外
+                if pos in ['助詞', '助動詞']:
+                    return False
+
+                # 名詞-非自立（こと、もの等）を除外
+                if pos == '名詞' and pos_sub == '非自立':
+                    return False
 
                 # 許可する品詞
                 allowed_pos = ['名詞', '接頭辞', '接尾辞']
@@ -387,12 +415,13 @@ class AdvancedStatisticalExtractor:
                     # 記号の場合は許可リストをチェック
                     if pos == '補助記号' and token.surface() in allowed_symbols:
                         continue
-                    # それ以外（助詞、動詞、形容詞など）は除外
+                    # それ以外（動詞、形容詞など）は除外
                     return False
 
-        except Exception:
-            # 形態素解析エラーの場合は基本チェックのみで通す
-            pass
+        except Exception as e:
+            # 形態素解析エラーの場合は除外（通さない）
+            logger.debug(f"Tokenization failed for term: {term}, rejecting: {e}")
+            return False
 
         return True
 
@@ -413,8 +442,8 @@ class AdvancedStatisticalExtractor:
                 if len(cand1) >= 3 and len(cand2) >= 3:
                     # Levenshtein比率で類似度計算
                     similarity = SequenceMatcher(None, cand1, cand2).ratio()
-                    # 閾値: 0.75-0.98（完全一致1.0は除外）
-                    if 0.75 < similarity < 0.98:
+                    # 閾値: 0.85-0.98（完全一致1.0は除外）
+                    if 0.85 < similarity < 0.98:
                         variants[cand1].add(cand2)
                         variants[cand2].add(cand1)
 
@@ -586,9 +615,51 @@ class AdvancedStatisticalExtractor:
 
         return tfidf_scores
 
-    def calculate_cvalue(self, candidates: Dict[str, int]) -> Dict[str, float]:
+    def _calculate_independent_occurrence_ratio(
+        self,
+        term: str,
+        full_text: str,
+        candidates: List[str]
+    ) -> float:
+        """
+        用語が独立して使われる比率を計算
+
+        Args:
+            term: 対象用語
+            full_text: 全文テキスト
+            candidates: 全候補用語リスト
+
+        Returns:
+            独立出現回数 / 全出現回数 (0.0 - 1.0)
+        """
+        # 全出現回数
+        total_occurrences = full_text.count(term)
+
+        if total_occurrences == 0:
+            return 0.0
+
+        # 複合語内での出現をカウント
+        compound_occurrences = 0
+        for candidate in candidates:
+            if candidate != term and term in candidate:
+                compound_occurrences += full_text.count(candidate)
+
+        # 独立出現回数
+        independent = total_occurrences - compound_occurrences
+
+        # 独立出現率を返す
+        ratio = independent / total_occurrences if total_occurrences > 0 else 0.0
+
+        return max(0.0, ratio)  # 負にならないように
+
+    def calculate_cvalue(
+        self,
+        candidates: Dict[str, int],
+        full_text: str = ""
+    ) -> Dict[str, float]:
         """
         C-value計算（ネストした用語の考慮）- 形態素数ベース
+        独立出現率による非独立語のフィルタリング機能を追加
 
         C-value = log2(|a|) * freq(a) - (1/|Ta|) * Σ freq(b)
 
@@ -597,6 +668,10 @@ class AdvancedStatisticalExtractor:
         - freq(a) = 用語aの頻度
         - Ta = aを含むより長い用語の集合
         - b ∈ Ta
+
+        Args:
+            candidates: 候補用語と頻度の辞書
+            full_text: 全文テキスト（独立出現率計算用、オプション）
         """
         cvalues = {}
 
@@ -612,8 +687,25 @@ class AdvancedStatisticalExtractor:
                     nested_info[shorter_term].append(longer_term)
 
         # C-value計算
+        candidates_list = list(candidates.keys())
         for term in candidates:
             freq = candidates[term]
+
+            # 独立出現率チェック（full_textが提供されている場合）
+            if full_text and term in nested_info:
+                # 他の用語に包含されている場合のみチェック
+                independent_ratio = self._calculate_independent_occurrence_ratio(
+                    term, full_text, candidates_list
+                )
+
+                # 独立出現率が30%未満（70%以上が複合語内）の場合は非独立語として除外
+                if independent_ratio < 0.3:
+                    logger.debug(
+                        f"Filtering non-independent term: {term} "
+                        f"(independent ratio: {independent_ratio:.2%})"
+                    )
+                    cvalues[term] = 0.0
+                    continue
 
             # 形態素数を正確に計算
             try:
@@ -665,6 +757,7 @@ class AdvancedStatisticalExtractor:
     ) -> Dict[str, float]:
         """
         TF-IDFとC-valueの重み付き結合（複合語優先）
+        C-valueスコアが0の用語（非独立語）は除外
 
         Args:
             tfidf_scores: TF-IDFスコア
@@ -674,9 +767,12 @@ class AdvancedStatisticalExtractor:
         Returns:
             結合スコア（再正規化なし）
         """
+        # C-valueスコアが0の用語を除外（非独立語フィルタリング）
+        valid_cvalue_scores = {k: v for k, v in cvalue_scores.items() if v > 0}
+
         # 個別に正規化
         tfidf_norm = self.min_max_normalize(tfidf_scores)
-        cvalue_norm = self.min_max_normalize(cvalue_scores)
+        cvalue_norm = self.min_max_normalize(valid_cvalue_scores)
 
         # ステージ別の重み設定
         if stage == "seed":
@@ -690,9 +786,14 @@ class AdvancedStatisticalExtractor:
 
         # 重み付き結合
         combined = {}
-        all_terms = set(tfidf_scores.keys()) | set(cvalue_scores.keys())
+        # C-valueスコアが有効な用語のみを対象とする
+        all_terms = set(tfidf_scores.keys()) | set(valid_cvalue_scores.keys())
 
         for term in all_terms:
+            # C-valueスコアが0（除外対象）の用語はスキップ
+            if cvalue_scores.get(term, 0.0) == 0:
+                continue
+
             tfidf = tfidf_norm.get(term, 0.0)
             cvalue = cvalue_norm.get(term, 0.0)
 
@@ -744,8 +845,8 @@ class AdvancedStatisticalExtractor:
         # 3. TF-IDF計算
         tfidf_scores = self.calculate_tfidf(documents, candidates)
 
-        # 4. C-value計算
-        cvalue_scores = self.calculate_cvalue(candidates)
+        # 4. C-value計算（独立出現率フィルタリング付き）
+        cvalue_scores = self.calculate_cvalue(candidates, full_text=text)
 
         # 5. シード選定用スコア（Stage A）
         seed_scores = self.calculate_combined_scores(
@@ -757,9 +858,19 @@ class AdvancedStatisticalExtractor:
             tfidf_scores, cvalue_scores, stage="final"
         )
 
-        # 7. ExtractedTermオブジェクト作成
+        # 7. ExtractedTermオブジェクト作成（スコア0を除外）
         terms = []
+        candidates_list = list(candidates.keys())
         for term, score in final_scores.items():
+            # スコア0の用語（非独立語）は除外
+            if score == 0:
+                continue
+
+            # 独立出現率を計算（メタデータ記録用）
+            independent_ratio = self._calculate_independent_occurrence_ratio(
+                term, text, candidates_list
+            )
+
             extracted_term = ExtractedTerm(
                 term=term,
                 score=score,
@@ -767,7 +878,8 @@ class AdvancedStatisticalExtractor:
                 cvalue_score=cvalue_scores.get(term, 0.0),
                 frequency=candidates.get(term, 0),
                 metadata={
-                    "seed_score": seed_scores.get(term, 0.0)
+                    "seed_score": seed_scores.get(term, 0.0),
+                    "independent_ratio": independent_ratio
                 }
             )
             terms.append(extracted_term)
@@ -1170,11 +1282,16 @@ class EnhancedTermExtractor:
             logger.info("No synonym candidates to validate")
             return {}
 
-        # 候補ペアをフラット化（重複排除）
+        # 候補ペアをフラット化（重複排除 + 包含関係除外）
         pairs = []
         seen = set()
         for term1, candidates in synonym_candidates.items():
             for term2 in candidates:
+                # 包含関係チェック（部分文字列）
+                if term1 in term2 or term2 in term1:
+                    logger.debug(f"Skipping substring pair: 「{term1}」⊂「{term2}」")
+                    continue
+
                 # 辞書順でペアを作成（重複排除）
                 pair = tuple(sorted([term1, term2]))
                 if pair not in seen:
