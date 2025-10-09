@@ -1308,7 +1308,8 @@ class EnhancedTermExtractor:
 
             try:
                 # LLMプロンプト作成
-                prompt = self._create_synonym_validation_prompt(batch)
+                from .prompts import get_synonym_validation_prompt
+                prompt = get_synonym_validation_prompt(batch)
 
                 # LLM実行
                 result_text = await self.llm.ainvoke(prompt)
@@ -1333,30 +1334,6 @@ class EnhancedTermExtractor:
 
         return {k: list(v) for k, v in confirmed_synonyms.items()}
 
-    def _create_synonym_validation_prompt(
-        self,
-        pairs: List[Tuple[str, str]]
-    ) -> str:
-        """LLM判定用プロンプト"""
-        pairs_text = '\n'.join([
-            f"{i+1}. 「{t1}」と「{t2}」"
-            for i, (t1, t2) in enumerate(pairs)
-        ])
-
-        return f"""以下の用語ペアが類義語（同じ意味を持つ語）かどうか判定してください。
-
-【用語ペア】
-{pairs_text}
-
-【判定基準】
-- 類義語: ほぼ同じ意味を持つ（例: 「データベース」と「DB」、「最適化」と「optimization」）
-- 非類義語: 関連はあるが意味が異なる（例: 「エンジン」と「ディーゼルエンジン」は上位語/下位語なので非類義語）
-
-【回答形式】
-各ペアについて、類義語なら1、非類義語なら0を返してください。
-形式: [1, 0, 1, ...]（カンマ区切りの数値リスト）
-
-回答:"""
 
     def _parse_synonym_validation_result(
         self,

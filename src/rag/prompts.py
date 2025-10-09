@@ -376,6 +376,48 @@ LIGHTWEIGHT_TERM_FILTER_USER_PROMPT = """以下の用語を判定してくださ
 
 判定結果:"""
 
+# Synonym validation prompt
+SYNONYM_VALIDATION_PROMPT = """以下の用語ペアが類義語（同じ意味を持つ語）かどうか判定してください。
+
+【用語ペア】
+{pairs_text}
+
+【判定基準】
+- 類義語: ほぼ同じ意味を持つ（例: 「データベース」と「DB」、「最適化」と「optimization」）
+- 非類義語: 関連はあるが意味が異なる（例: 「エンジン」と「ディーゼルエンジン」は上位語/下位語なので非類義語）
+
+【回答形式】
+各ペアについて、類義語なら1、非類義語なら0を返してください。
+形式: [1, 0, 1, ...]（カンマ区切りの数値リスト）
+
+回答:"""
+
+# Term extraction validation prompts
+TERM_EXTRACTION_VALIDATION_SYSTEM_PROMPT = """あなたは専門分野の用語抽出専門家です。
+与えられた候補リストから、真に専門的で重要な用語のみを厳選してください。
+
+【判定基準】
+1. ドメイン固有性：その分野特有の概念
+2. 定義の必要性：説明が必要な概念
+3. 複合概念：複数の概念が結合した新しい意味
+
+【関連語候補の活用】
+検出された関連語候補を参考に、synonymsフィールドに設定してください。
+
+{format_instructions}"""
+
+TERM_EXTRACTION_VALIDATION_USER_PROMPT = """
+文書テキスト:
+{chunk}
+
+候補語リスト:
+{candidates}
+
+関連語候補:
+{synonym_hints}
+
+上記から専門用語を抽出してJSON形式で出力してください。"""
+
 def get_definition_generation_prompt():
     return ChatPromptTemplate.from_messages([
         ("system", DEFINITION_GENERATION_SYSTEM_PROMPT),
@@ -392,4 +434,32 @@ def get_lightweight_term_filter_prompt():
     return ChatPromptTemplate.from_messages([
         ("system", LIGHTWEIGHT_TERM_FILTER_SYSTEM_PROMPT),
         ("human", LIGHTWEIGHT_TERM_FILTER_USER_PROMPT)
+    ])
+
+def get_synonym_validation_prompt(pairs):
+    """
+    Create synonym validation prompt with pairs.
+
+    Args:
+        pairs: List of tuples (term1, term2)
+
+    Returns:
+        Formatted prompt string
+    """
+    pairs_text = '\n'.join([
+        f"{i+1}. 「{t1}」と「{t2}」"
+        for i, (t1, t2) in enumerate(pairs)
+    ])
+    return SYNONYM_VALIDATION_PROMPT.format(pairs_text=pairs_text)
+
+def get_term_extraction_validation_prompt():
+    """
+    Get term extraction validation prompt template.
+
+    Returns:
+        ChatPromptTemplate with format_instructions partial
+    """
+    return ChatPromptTemplate.from_messages([
+        ("system", TERM_EXTRACTION_VALIDATION_SYSTEM_PROMPT),
+        ("human", TERM_EXTRACTION_VALIDATION_USER_PROMPT)
     ])

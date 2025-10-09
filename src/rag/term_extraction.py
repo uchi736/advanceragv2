@@ -56,7 +56,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     fitz = None
 
-from src.rag.pdf_processors import PyMuPDFProcessor, AzureDocumentIntelligenceProcessor
+from src.rag.pdf_processors import AzureDocumentIntelligenceProcessor
 
 
 # ========== Pydantic Models ==========
@@ -276,40 +276,16 @@ class TermExtractor:
                 )
                 self.pdf_processor = None
 
-        if self.pdf_processor is None and fitz is not None:
-            try:
-                self.pdf_processor = PyMuPDFProcessor(config)
-            except Exception as exc:
-                logger.warning("PyMuPDF processor initialization failed (%s). Using direct PyMuPDF fallback.", exc)
-                self.pdf_processor = None
+        # If Azure DI processor is not available, we'll use direct PyMuPDF fallback
+        if self.pdf_processor is None:
+            logger.warning("Azure DI processor not available. Using direct PyMuPDF fallback.")
 
     def _init_prompts(self):
         """プロンプトテンプレートの初期化"""
-        self.validation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """あなたは専門分野の用語抽出専門家です。
-与えられた候補リストから、真に専門的で重要な用語のみを厳選してください。
-
-【判定基準】
-1. ドメイン固有性：その分野特有の概念
-2. 定義の必要性：説明が必要な概念
-3. 複合概念：複数の概念が結合した新しい意味
-
-【関連語候補の活用】
-検出された関連語候補を参考に、synonymsフィールドに設定してください。
-
-{format_instructions}"""),
-            ("human", """
-文書テキスト:
-{chunk}
-
-候補語リスト:
-{candidates}
-
-関連語候補:
-{synonym_hints}
-
-上記から専門用語を抽出してJSON形式で出力してください。""")
-        ]).partial(format_instructions=self.json_parser.get_format_instructions())
+        from .prompts import get_term_extraction_validation_prompt
+        self.validation_prompt = get_term_extraction_validation_prompt().partial(
+            format_instructions=self.json_parser.get_format_instructions()
+        )
 
     async def extract_from_documents(self, file_paths: List[Path]) -> List[Dict]:
         """複数の文書から専門用語を抽出（ドキュメントごとに候補抽出）"""
