@@ -277,7 +277,9 @@ class RAGSystem:
                         jargon_definitions = "\n".join([f"- {term}: {info['definition']}" for term, info in jargon_info["matched_terms"].items()])
 
                 # Format context
-                context = format_docs(rag_results.get("context", []))
+                # Note: retrieval_chain returns "documents" key, not "context"
+                docs = rag_results.get("documents") or rag_results.get("context", [])
+                context = format_docs(docs)
 
                 # Generate answer
                 chain = rag_prompt | self.llm | StrOutputParser()
@@ -310,10 +312,12 @@ class RAGSystem:
                 print(f"SQL query error: {e}")
 
         if not sql_results or "error" in sql_results:
+            # Note: retrieval_chain returns "documents" key, not "context"
+            docs = rag_results.get("documents") or rag_results.get("context", [])
             return {
                 "answer": rag_results.get("answer", ""),
                 "source": "rag",
-                "context": rag_results.get("context", []),
+                "context": docs,
                 "confidence_scores": rag_results.get("confidence_scores", []),
                 "jargon_augmentation": rag_results.get("jargon_augmentation", {}),
                 "query_expansion": rag_results.get("query_expansion", []),
@@ -335,12 +339,14 @@ class RAGSystem:
         else:
             answer = rag_results.get("answer", "")
 
+        # Note: retrieval_chain returns "documents" key, not "context"
+        docs = rag_results.get("documents") or rag_results.get("context", [])
         return {
             "answer": answer,
             "source": "synthesis",
             "rag_results": rag_results,
             "sql_results": sql_results,
-            "context": rag_results.get("context", []),
+            "context": docs,
             "confidence_scores": rag_results.get("confidence_scores", []),
             "jargon_augmentation": rag_results.get("jargon_augmentation", {}),
             "query_expansion": rag_results.get("query_expansion", []),
