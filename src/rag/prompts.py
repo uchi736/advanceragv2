@@ -101,83 +101,6 @@ ANSWER_GENERATION = """以下のコンテキスト情報を基に、質問に対
 
 回答:"""
 
-# SQL and routing prompts
-SEMANTIC_ROUTER = """あなたはユーザーの質問の意図を分析し、最適な処理ルートを判断するエキスパートです。
-以下の情報に基づいて、質問を「SQL」か「RAG」のどちらにルーティングすべきかを決定してください。
-
-利用可能なデータテーブルの概要:
-{tables_info}
-
-ユーザーの質問: {question}
-
-判断基準:
-- 「SQL」ルート: 質問が、上記テーブル内のデータに対する具体的な集計、計算、フィルタリング、ランキング、または個々のレコードの検索を要求している場合。例：「売上トップ5の製品は？」「昨年の平均注文額は？」
-- 「RAG」ルート: 質問が、一般的な知識、ドキュメントの内容に関する説明、要約、概念の理解、または自由形式の対話を求めている場合。例：「このレポートの要点を教えて」「弊社のコンプライアンス方針について説明して」
-
-思考プロセスをステップバイステップで記述し、最終的な判断をJSON形式で出力してください。
-
-思考プロセス:
-1. ユーザーの質問の主要なキーワードと意図を分析します。
-2. 質問が利用可能なデータテーブルの情報を活用して解決できるか評価します。
-3. 判断基準と照らし合わせ、最も適切なルートを選択します。
-
-出力形式:
-{{
-  "route": "SQL" or "RAG",
-  "reason": "判断理由を簡潔に記述"
-}}
-"""
-
-MULTI_TABLE_TEXT_TO_SQL = """あなたはPostgreSQLエキスパートです。以下に提示される複数のテーブルスキーマの中から、ユーザーの質問に答えるために最も適切と思われるテーブルを選択し、必要であればそれらのテーブル間でJOINを適切に使用して、SQLクエリを生成してください。
-SQLはPostgreSQL構文に準拠し、テーブル名やカラム名が日本語の場合はダブルクォーテーションで囲んでください。
-最終的な結果セットが過度に大きくならないよう、適切にLIMIT句を使用してください（例: LIMIT {{max_sql_results}}）。
-
-利用可能なテーブルのスキーマ情報一覧:
-{schemas_info}
-
-ユーザーの質問: {question}
-
-SQLクエリのみを返してください:
-```sql
-SELECT ...
-```
-"""
-
-SQL_ANSWER_GENERATION = """与えられた元の質問と、それに基づいて実行されたSQLクエリ、およびその実行結果を考慮して、ユーザーにとって分かりやすい言葉で回答を生成してください。
-
-元の質問: {original_question}
-
-実行されたSQLクエリ:
-```sql
-{sql_query}
-```
-
-SQL実行結果のプレビュー (最大 {max_preview_rows} 件表示):
-{sql_results_preview_str}
-(このプレビューは全 {total_row_count} 件中の一部です)
-
-上記の情報を踏まえた、質問に対する回答:"""
-
-SYNTHESIS = """あなたは高度なAIアシスタントです。ユーザーの質問に対して、以下の2種類の検索結果が提供されました。
-1. **RAG検索結果**: ドキュメントから抽出された、関連性の高いテキスト情報。
-2. **SQL検索結果**: データベースから取得された、具体的なデータや集計結果。
-
-これらの情報を包括的に分析し、両方の結果を適切に組み合わせて、ユーザーに一つのまとまりのある、分かりやすい回答を生成してください。
-
-ユーザーの質問: {question}
-
-RAG検索結果 (ドキュメントからの抜粋):
----
-{rag_context}
----
-
-SQL検索結果 (データベースからのデータ):
----
-{sql_data}
----
-
-上記の情報を統合した最終的な回答:"""
-
 # Convenience functions to get ChatPromptTemplate objects
 def get_jargon_extraction_prompt(max_terms=5):
     template = JARGON_EXTRACTION.replace("{{max_terms}}", str(max_terms))
@@ -194,19 +117,6 @@ def get_reranking_prompt():
 
 def get_answer_generation_prompt():
     return ChatPromptTemplate.from_template(ANSWER_GENERATION)
-
-def get_semantic_router_prompt():
-    return ChatPromptTemplate.from_template(SEMANTIC_ROUTER)
-
-def get_multi_table_text_to_sql_prompt(max_sql_results):
-    template = MULTI_TABLE_TEXT_TO_SQL.replace("{{max_sql_results}}", str(max_sql_results))
-    return ChatPromptTemplate.from_template(template)
-
-def get_sql_answer_generation_prompt():
-    return ChatPromptTemplate.from_template(SQL_ANSWER_GENERATION)
-
-def get_synthesis_prompt():
-    return ChatPromptTemplate.from_template(SYNTHESIS)
 
 # Term extraction prompts (for SemReRank pipeline)
 DEFINITION_GENERATION_SYSTEM_PROMPT = """あなたは専門用語の定義作成の専門家です。
