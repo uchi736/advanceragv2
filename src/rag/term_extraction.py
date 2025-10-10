@@ -554,12 +554,19 @@ class TermExtractor:
             logger.info("SemReRank disabled, using base scores")
             enhanced_scores = base_scores
 
-        # 5. 類義語検出
-        logger.info("Detecting synonyms")
+        # 5. 類義語・関連語検出
+        logger.info("Detecting synonyms (variants)")
         synonym_map = self.statistical_extractor.detect_variants(
             candidates=list(candidates_for_semrerank.keys())
         )
         logger.info(f"Detected synonyms for {len(synonym_map)} terms")
+
+        logger.info("Detecting related terms (inclusion & co-occurrence)")
+        related_map = self.statistical_extractor.detect_related_terms(
+            candidates=list(candidates_for_semrerank.keys()),
+            full_text=full_text
+        )
+        logger.info(f"Detected related terms for {len(related_map)} terms")
 
         # 6. ExtractedTermオブジェクト化
         from .advanced_term_extraction import ExtractedTerm
@@ -570,7 +577,8 @@ class TermExtractor:
                 tfidf_score=tfidf_scores.get(term, 0.0),
                 cvalue_score=cvalue_scores.get(term, 0.0),
                 frequency=all_candidates.get(term, 0),
-                synonyms=synonym_map.get(term, [])
+                variants=synonym_map.get(term, []),  # 表記ゆれ
+                related_terms=related_map.get(term, [])  # 関連語（包含・共起）
             )
             for term in enhanced_scores
         ]
