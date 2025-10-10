@@ -369,6 +369,16 @@ class AdvancedStatisticalExtractor:
         if re.match(r'^\d+$', term):
             return False
 
+        # 数字で始まる一般複合語を除外（型番・規格は除く）
+        # 型番パターン: 6DE-18, A-100X, ISO9001など（英数字+ハイフン）
+        # 除外パターン: 18コンプレッサ, 2050年カーボンニュートラル, 3.5コンプレッサ圧力比
+        if re.match(r'^[\d.]+', term):
+            # 型番・規格パターンかチェック
+            # - ハイフンを含む: 6DE-18, A-100
+            # - 英字で始まり数字を含む: ISO9001, L28ADF
+            if not re.match(r'^[A-Z]+[\dA-Z-]+$', term):  # 型番・規格パターン
+                return False
+
         # 汎用語ブラックリスト拡充
         generic_terms = {
             'エリア', 'モード', 'こと', 'もの', 'ため', 'よう', 'など',
