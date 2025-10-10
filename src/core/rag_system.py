@@ -267,14 +267,14 @@ class RAGSystem:
         # Step 1: Extract jargon terms from query (if enabled)
         def extract_jargon(inputs: Dict) -> Dict:
             """Extract technical terms from the query"""
-            question = inputs["question"]
-            if not inputs.get("use_jargon_augmentation", False):
+            question = inputs.get("question", "")
+            if not question or not inputs.get("use_jargon_augmentation", False):
                 inputs["jargon_terms"] = []
                 return inputs
 
             try:
                 jargon_prompt = get_jargon_extraction_prompt()
-                response = self.llm.invoke(jargon_prompt.format(query=question))
+                response = self.llm.invoke(jargon_prompt.format(question=question))
 
                 # Parse terms from response
                 import re
@@ -290,26 +290,25 @@ class RAGSystem:
         def augment_with_jargon(inputs: Dict) -> Dict:
             """Augment query with technical term definitions"""
             if not inputs.get("use_jargon_augmentation", False) or not inputs.get("jargon_terms"):
-                inputs["augmented_query"] = inputs["question"]
+                inputs["augmented_query"] = inputs.get("question", "")
                 inputs["jargon_augmentation"] = {}
                 return inputs
 
             try:
-                matched_terms = {}
-                for term in inputs["jargon_terms"]:
-                    term_info = self.jargon_manager.get_term(term)
-                    if term_info:
-                        matched_terms[term] = term_info
+                # Lookup all terms at once
+                jargon_terms = inputs.get("jargon_terms", [])
+                matched_terms = self.jargon_manager.lookup_terms(jargon_terms) if jargon_terms else {}
 
                 # Augment query with definitions
+                question = inputs.get("question", "")
                 if matched_terms:
                     augmentation_text = "\n".join([
                         f"{term}: {info['definition']}"
                         for term, info in matched_terms.items()
                     ])
-                    inputs["augmented_query"] = f"{inputs['question']}\n\n関連用語:\n{augmentation_text}"
+                    inputs["augmented_query"] = f"{question}\n\n関連用語:\n{augmentation_text}"
                 else:
-                    inputs["augmented_query"] = inputs["question"]
+                    inputs["augmented_query"] = question
 
                 inputs["jargon_augmentation"] = {
                     "matched_terms": matched_terms,
@@ -317,7 +316,7 @@ class RAGSystem:
                 }
             except Exception as e:
                 logger.warning(f"Jargon augmentation failed: {e}")
-                inputs["augmented_query"] = inputs["question"]
+                inputs["augmented_query"] = inputs.get("question", "")
                 inputs["jargon_augmentation"] = {}
 
             return inputs
@@ -326,13 +325,14 @@ class RAGSystem:
         def expand_query(inputs: Dict) -> Dict:
             """Expand query with related queries"""
             if not inputs.get("use_query_expansion", False) and not inputs.get("use_rag_fusion", False):
-                inputs["expanded_queries"] = [inputs.get("augmented_query", inputs["question"])]
+                base_query = inputs.get("augmented_query") or inputs.get("question", "")
+                inputs["expanded_queries"] = [base_query] if base_query else []
                 inputs["query_expansion"] = {}
                 return inputs
 
             try:
                 expansion_prompt = get_query_expansion_prompt()
-                base_query = inputs.get("augmented_query", inputs["question"])
+                base_query = inputs.get("augmented_query") or inputs.get("question", "")
                 response = self.llm.invoke(expansion_prompt.format(original_query=base_query))
 
                 # Parse expanded queries
@@ -345,7 +345,8 @@ class RAGSystem:
                 }
             except Exception as e:
                 logger.warning(f"Query expansion failed: {e}")
-                inputs["expanded_queries"] = [inputs.get("augmented_query", inputs["question"])]
+                fallback_query = inputs.get("augmented_query") or inputs.get("question", "")
+                inputs["expanded_queries"] = [fallback_query] if fallback_query else []
                 inputs["query_expansion"] = {}
 
             return inputs
@@ -354,7 +355,8 @@ class RAGSystem:
         def retrieve_documents(inputs: Dict) -> Dict:
             """Retrieve documents using configured search type"""
             search_type = inputs.get("search_type", "hybrid")
-            queries = inputs.get("expanded_queries", [inputs["question"]])
+            default_query = inputs.get("question", "")
+            queries = inputs.get("expanded_queries", [default_query] if default_query else [])
 
             # Set retriever search type
             original_search_type = getattr(self.retriever, 'search_type', 'hybrid')
@@ -377,8 +379,8 @@ class RAGSystem:
                     }
                 else:
                     # Single query retrieval
-                    query = queries[0] if queries else inputs["question"]
-                    inputs["documents"] = self.retriever.get_relevant_documents(query)[:self.config.final_k]
+                    query = queries[0] if queries else inputs.get("question", "")
+                    inputs["documents"] = self.retriever.get_relevant_documents(query)[:self.config.final_k] if query else []
                     inputs["golden_retriever"] = {"enabled": False}
 
             except Exception as e:
@@ -402,7 +404,7 @@ class RAGSystem:
                 original_count = len(inputs["documents"])
                 reranked_docs = _rerank_documents_with_llm(
                     inputs["documents"],
-                    inputs["question"],
+                    inputs.get("question", ""),
                     self.llm,
                     top_k=self.config.final_k
                 )
@@ -421,7 +423,7 @@ class RAGSystem:
         # Step 6: Format retrieval query for logging
         def add_retrieval_query(inputs: Dict) -> Dict:
             """Add the final retrieval query used"""
-            inputs["retrieval_query"] = inputs.get("augmented_query", inputs["question"])
+            inputs["retrieval_query"] = inputs.get("augmented_query") or inputs.get("question", "")
             return inputs
 
         # Build the chain using RunnableLambda for each step
