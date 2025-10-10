@@ -302,7 +302,7 @@ class AdvancedStatisticalExtractor:
         tokens = self._safe_tokenize(text, self.sudachi_mode_a)
         current_compound = []
 
-        for token in tokens:
+        for idx, token in enumerate(tokens):
             pos = token.part_of_speech()[0]
 
             # 名詞または接頭辞の場合
@@ -310,7 +310,16 @@ class AdvancedStatisticalExtractor:
                 surface = token.surface()
                 # 数字のみのトークンは複合語を区切る（18, 2050などを除外）
                 if re.match(r'^\d+\.?\d*$', surface):
-                    # 現在の複合語を処理して終了
+                    # 次のトークンが助数詞かチェック（2段、3層など）
+                    if idx + 1 < len(tokens):
+                        next_token = tokens[idx + 1]
+                        next_pos = next_token.part_of_speech()
+                        # pos[2]が"助数詞可能"なら数字を含める
+                        if len(next_pos) > 2 and next_pos[2] and '助数詞' in next_pos[2]:
+                            current_compound.append(surface)
+                            continue
+
+                    # 助数詞でない場合は複合語を区切る
                     if len(current_compound) >= self.min_term_length:
                         compound = ''.join(current_compound)
                         if self._is_valid_term(compound):
@@ -339,6 +348,10 @@ class AdvancedStatisticalExtractor:
         """用語の妥当性チェック（文字列 + 品詞ベース）"""
         # 空文字列・最小文字数チェック（3文字未満除外）
         if not term or len(term) < 3:
+            return False
+
+        # 図表番号パターンを除外（第3図、第1表、第2式など）
+        if re.match(r'^第\d+[図表式]', term):
             return False
 
         # 助詞・助動詞ブラックリスト

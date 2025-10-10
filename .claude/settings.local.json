@@ -1,15 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep:*)",
-      "Bash(tasklist)",
-      "Bash(taskkill:*)",
-      "Bash(myenv/Scripts/python.exe test_advanced_rag.py:*)",
-      "Bash(timeout 60 myenv/Scripts/python.exe:*)",
-      "Bash(timeout 120 myenv/Scripts/python.exe:*)",
-      "Bash(timeout:*)",
-      "Bash(git restore:*)",
-      "Bash(myenv/Scripts/python.exe -c \"\nfrom sudachipy import tokenizer, dictionary\ntok = dictionary.Dictionary().create()\nfor text in [''18コンプレッサ'', ''2050年カーボンニュートラル'']:\n    print(f''\\n{text}:'')\n    for t in tok.tokenize(text, tokenizer.Tokenizer.SplitMode.A):\n        print(f''  {t.surface()} -> {t.part_of_speech()[0]}'')\n\")"
+      "Bash(myenv/Scripts/python.exe -c \"\nfrom sudachipy import tokenizer, dictionary\ntok = dictionary.Dictionary().create()\ntest_texts = [''2段コンプレッサ'', ''3層構造'', ''第3図システム'']\nfor text in test_texts:\n    print(f''\\n{text}:'')\n    for t in tok.tokenize(text, tokenizer.Tokenizer.SplitMode.A):\n        pos = t.part_of_speech()\n        print(f''  {t.surface()} -> 品詞: {pos[0]}, 細分類: {pos[1]}, {pos[2]}, {pos[3]}'')\n\")"
     ],
     "deny": [],
     "ask": []
