@@ -369,7 +369,7 @@ class RAGSystem:
                         all_results.append(docs)
 
                     # Apply RRF
-                    inputs["documents"] = _reciprocal_rank_fusion(all_results)[:self.config.top_k]
+                    inputs["documents"] = _reciprocal_rank_fusion(all_results)[:self.config.final_k]
                     inputs["golden_retriever"] = {
                         "enabled": True,
                         "num_queries": len(queries),
@@ -378,7 +378,7 @@ class RAGSystem:
                 else:
                     # Single query retrieval
                     query = queries[0] if queries else inputs["question"]
-                    inputs["documents"] = self.retriever.get_relevant_documents(query)[:self.config.top_k]
+                    inputs["documents"] = self.retriever.get_relevant_documents(query)[:self.config.final_k]
                     inputs["golden_retriever"] = {"enabled": False}
 
             except Exception as e:
@@ -404,7 +404,7 @@ class RAGSystem:
                     inputs["documents"],
                     inputs["question"],
                     self.llm,
-                    top_k=self.config.top_k
+                    top_k=self.config.final_k
                 )
                 inputs["documents"] = reranked_docs
                 inputs["reranking"] = {
