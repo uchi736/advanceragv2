@@ -528,9 +528,11 @@ class TermExtractor:
 
         for term in candidates_for_semrerank.keys():
             if abbreviation_pattern.match(term):
-                # 略語には1.3倍のボーナス
-                base_scores_for_semrerank[term] *= 1.3
-                seed_scores_for_semrerank[term] *= 1.3
+                # 略語には1.3倍のボーナス（辞書に存在する場合のみ）
+                if term in base_scores_for_semrerank:
+                    base_scores_for_semrerank[term] *= 1.3
+                if term in seed_scores_for_semrerank:
+                    seed_scores_for_semrerank[term] *= 1.3
                 abbreviation_count += 1
                 logger.info(f"  [BONUS] {term}: abbreviation bonus applied (×1.3)")
 

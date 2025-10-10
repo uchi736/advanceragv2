@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(tasklist)",
+      "Bash(taskkill:*)",
+      "Bash(myenv/Scripts/python.exe test_advanced_rag.py:*)",
+      "Bash(timeout 60 myenv/Scripts/python.exe:*)",
+      "Bash(timeout 120 myenv/Scripts/python.exe:*)",
+      "Bash(timeout:*)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []
