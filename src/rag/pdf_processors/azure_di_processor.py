@@ -10,12 +10,10 @@ import base64
 from langchain_core.messages import HumanMessage
 from langchain_openai import AzureChatOpenAI
 
-from .base_processor import BasePDFProcessor
-
 logger = logging.getLogger(__name__)
 
 
-class AzureDocumentIntelligenceProcessor(BasePDFProcessor):
+class AzureDocumentIntelligenceProcessor:
     """
     Azure Document Intelligence を使用したPDF処理クラス
     
@@ -26,13 +24,14 @@ class AzureDocumentIntelligenceProcessor(BasePDFProcessor):
     def __init__(self, config: Any, image_output_dir: str = "output/images"):
         """
         Azure Document Intelligence プロセッサの初期化
-        
+
         Args:
             config: 設定オブジェクト
             image_output_dir: 画像出力ディレクトリ
         """
-        super().__init__(config, image_output_dir)
-        
+        self.config = config
+        self.image_output_dir = image_output_dir
+
         # Azure Document Intelligence設定の確認
         self.endpoint = getattr(config, 'azure_di_endpoint', None)
         self.api_key = getattr(config, 'azure_di_api_key', None)
@@ -76,7 +75,43 @@ class AzureDocumentIntelligenceProcessor(BasePDFProcessor):
             os.makedirs(self.image_output_dir)
         
         logger.info(f"Azure Document Intelligence processor initialized with model: {self.model}")
-    
+
+    def process(self, file_path: str) -> List[Any]:
+        """
+        PDFを処理してLangChain Documentのリストを返す
+
+        Args:
+            file_path: 処理するPDFファイルのパス
+
+        Returns:
+            LangChain Documentオブジェクトのリスト
+        """
+        from langchain.schema import Document
+
+        # parse_pdfを呼び出して要素を取得
+        elements = self.parse_pdf(file_path)
+        documents = []
+
+        # Markdownテキストをドキュメント化
+        for text, metadata in elements.get("texts", []):
+            if text and text.strip():
+                documents.append(Document(
+                    page_content=text,
+                    metadata=metadata
+                ))
+
+        # テーブルをMarkdown形式でドキュメント化
+        for table_data, metadata in elements.get("tables", []):
+            table_markdown = self.format_table_as_markdown(table_data)
+            if table_markdown:
+                documents.append(Document(
+                    page_content=table_markdown,
+                    metadata=metadata
+                ))
+
+        logger.info(f"Converted to {len(documents)} LangChain documents")
+        return documents
+
     def parse_pdf(self, file_path: str) -> Dict[str, List[Any]]:
         """
         PDFファイルを処理してMarkdown形式のテキストを抽出

@@ -1,13 +1,9 @@
 """
-PDF処理プロセッサパッケージ
+PDF処理プロセッサパッケージ - Azure Document Intelligence only
 """
 
-from .base_processor import BasePDFProcessor
-from .pymupdf_processor import PyMuPDFProcessor
 from .azure_di_processor import AzureDocumentIntelligenceProcessor
 
 __all__ = [
-    'BasePDFProcessor',
-    'PyMuPDFProcessor', 
     'AzureDocumentIntelligenceProcessor'
 ]

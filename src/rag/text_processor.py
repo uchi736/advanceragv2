@@ -47,7 +47,7 @@ class JapaneseTextProcessor:
     
     def tokenize(self, text: str, remove_stop_words: bool = True) -> List[str]:
         """Tokenizes Japanese text using SudachiPy."""
-        if not self.tokenizer_obj or not self.is_japanese(text):
+        if not SUDACHI_AVAILABLE or not self.tokenizer_obj or not self.is_japanese(text):
             # Fallback to space-splitting for non-Japanese text
             return text.split()
         
@@ -72,7 +72,7 @@ class JapaneseTextProcessor:
     
     def tokenize_with_details(self, text: str) -> List[dict]:
         """Tokenizes Japanese text and returns detailed information."""
-        if not self.tokenizer_obj or not self.is_japanese(text):
+        if not SUDACHI_AVAILABLE or not self.tokenizer_obj or not self.is_japanese(text):
             return []
         
         results = []
@@ -93,7 +93,7 @@ class JapaneseTextProcessor:
     
     def extract_keywords(self, text: str, min_length: int = 2) -> List[str]:
         """Extracts keywords (nouns and compound nouns) from Japanese text."""
-        if not self.tokenizer_obj or not self.is_japanese(text):
+        if not SUDACHI_AVAILABLE or not self.tokenizer_obj or not self.is_japanese(text):
             return []
         
         keywords = []

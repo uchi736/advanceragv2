@@ -49,6 +49,13 @@ class JapaneseHybridRetriever(BaseRetriever):
         """Performs keyword-based search with Japanese tokenization support."""
         res: List[Tuple[Document, float]] = []
 
+        # Check if engine is available
+        if not self.engine:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("[HybridRetriever] No engine available for keyword search")
+            return []
+
         normalized_query = self.text_processor.normalize_text(q)
         is_japanese = self.text_processor.is_japanese(normalized_query)
 
@@ -64,10 +71,11 @@ class JapaneseHybridRetriever(BaseRetriever):
                         if len(token) >= self.config_params.japanese_min_token_length:
                             conditions.append(f"(content LIKE :token{i} OR tokenized_content LIKE :token{i})")
                             params[f"token{i}"] = f"%{token}%"
-                    
+
                     if not conditions: return []
-                    
-                    where_clause = " AND ".join(conditions)
+
+                    # Use OR for better recall in Japanese search
+                    where_clause = " OR ".join(conditions)
                     sql = f"""
                         SELECT chunk_id, content, metadata, 
                                (LENGTH(content) - LENGTH(REPLACE(LOWER(content), LOWER(:original_query), ''))) / LENGTH(:original_query) AS score
@@ -115,50 +123,9 @@ class JapaneseHybridRetriever(BaseRetriever):
         ranked = sorted(score_map.values(), key=lambda x: x["s"], reverse=True)
         return [x["doc"] for x in ranked[:self.config_params.final_k]]
 
-    def _fetch_parent_chunks(self, child_docs: List[Document]) -> List[Document]:
-        """Fetches parent chunks for a list of child documents."""
-        parent_ids_to_fetch = []
-        for doc in child_docs:
-            if "parent_chunk_id" in doc.metadata:
-                parent_ids_to_fetch.append(doc.metadata["parent_chunk_id"])
-        
-        if not parent_ids_to_fetch:
-            return child_docs
-
-        unique_parent_ids = list(set(parent_ids_to_fetch))
-        sql = text("""
-            SELECT content, metadata 
-            FROM document_chunks 
-            WHERE chunk_id = ANY(:parent_ids) AND collection_name = :collection_name
-        """)
-
-        try:
-            with self.engine.connect() as conn:
-                db_result = conn.execute(sql, {"parent_ids": unique_parent_ids, "collection_name": self.config_params.collection_name})
-                parent_docs_map = {
-                    json.loads(row.metadata).get("chunk_id"): Document(page_content=row.content, metadata=json.loads(row.metadata or "{}"))
-                    for row in db_result
-                }
-        except Exception as e:
-            print(f"Error fetching parent chunks: {e}")
-            return child_docs # Fallback to child docs on error
-
-        # Replace child docs with their parents, maintaining order and handling misses
-        final_docs = []
-        fetched_parent_ids = set()
-        for doc in child_docs:
-            parent_id = doc.metadata.get("parent_chunk_id")
-            if parent_id and parent_id in parent_docs_map and parent_id not in fetched_parent_ids:
-                final_docs.append(parent_docs_map[parent_id])
-                fetched_parent_ids.add(parent_id)
-            elif not parent_id: # It's a regular chunk, not a child
-                final_docs.append(doc)
-        
-        return final_docs
-
     def _get_relevant_documents(self, query: str, *, run_manager: Optional[CallbackManagerForRetrieverRun] = None, **kwargs: Any) -> List[Document]:
         config = kwargs.get("config")
-        
+
         if self.search_type == 'ベクトル検索':
             vres = self._vector_search(query, config=config)
             retrieved_docs = [doc for doc, score in vres]
@@ -167,9 +134,6 @@ class JapaneseHybridRetriever(BaseRetriever):
             kres = self._keyword_search(query, config=config)
             retrieved_docs = self._reciprocal_rank_fusion_hybrid(vres, kres)
 
-        if self.config_params.enable_parent_child_chunking:
-            return self._fetch_parent_chunks(retrieved_docs)
-        
         return retrieved_docs[:self.config_params.final_k]
 
     async def _aget_relevant_documents(self, query: str, *, run_manager: Optional[CallbackManagerForRetrieverRun] = None, **kwargs: Any) -> List[Document]:

@@ -36,8 +36,15 @@ from src.rag.term_extraction import JargonDictionaryManager  # 統合された�
 from src.rag.retriever import JapaneseHybridRetriever
 from src.rag.ingestion import IngestionHandler
 from src.rag.sql_handler import SQLHandler
-from src.rag.chains import create_chains, create_retrieval_chain, create_full_rag_chain
 from src.rag.evaluator import RAGEvaluator, EvaluationResults, EvaluationMetrics
+from src.rag.prompts import (
+    get_jargon_extraction_prompt,
+    get_query_augmentation_prompt,
+    get_query_expansion_prompt,
+    get_reranking_prompt,
+    get_answer_generation_prompt
+)
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda, RunnableBranch, Runnable
 
 # load_dotenv()  # Commented out - loaded in main script
 
@@ -46,6 +53,86 @@ def format_docs(docs: List[Any]) -> str:
     if not docs:
         return "(コンテキスト無し)"
     return "\n\n".join([f"[ソース {i+1} ChunkID: {d.metadata.get('chunk_id', 'N/A')}]\n{d.page_content}" for i, d in enumerate(docs)])
+
+def _reciprocal_rank_fusion(results_list: List[List], k: int = 60) -> List:
+    """
+    Reciprocal Rank Fusion (RRF) algorithm to combine multiple ranked lists.
+
+    Args:
+        results_list: List of ranked document lists
+        k: Constant for RRF formula (default 60)
+
+    Returns:
+        Re-ranked list of documents
+    """
+    from collections import defaultdict
+
+    doc_scores = defaultdict(float)
+    doc_objects = {}
+
+    for doc_list in results_list:
+        for rank, doc in enumerate(doc_list, start=1):
+            # Use chunk_id as unique identifier
+            doc_id = doc.metadata.get('chunk_id', str(hash(doc.page_content)))
+            doc_scores[doc_id] += 1 / (rank + k)
+            if doc_id not in doc_objects:
+                doc_objects[doc_id] = doc
+
+    # Sort by RRF score
+    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+    return [doc_objects[doc_id] for doc_id, score in sorted_docs]
+
+def _rerank_documents_with_llm(docs: List, question: str, llm, top_k: int = 5) -> List:
+    """
+    Re-rank documents using LLM-based relevance scoring.
+
+    Args:
+        docs: List of documents to re-rank
+        question: User question
+        llm: Language model for scoring
+        top_k: Number of top documents to return
+
+    Returns:
+        Re-ranked list of top_k documents
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if not docs:
+        return []
+
+    try:
+        from src.rag.prompts import get_reranking_prompt
+
+        reranking_prompt = get_reranking_prompt()
+
+        # Format documents for reranking
+        doc_texts = [f"Document {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs)]
+        docs_combined = "\n\n".join(doc_texts)
+
+        # Get relevance scores from LLM
+        response = llm.invoke(
+            reranking_prompt.format(question=question, documents=docs_combined)
+        )
+
+        # Parse scores from response
+        import re
+        scores = re.findall(r'\d+', response.content if hasattr(response, 'content') else str(response))
+        scores = [int(s) for s in scores[:len(docs)]]
+
+        # Pad with zeros if fewer scores than docs
+        while len(scores) < len(docs):
+            scores.append(0)
+
+        # Sort documents by score
+        doc_score_pairs = list(zip(docs, scores))
+        doc_score_pairs.sort(key=lambda x: x[1], reverse=True)
+
+        return [doc for doc, score in doc_score_pairs[:top_k]]
+
+    except Exception as e:
+        logger.warning(f"Reranking failed: {e}. Returning original order.")
+        return docs[:top_k]
 
 class RAGSystem:
     def __init__(self, cfg: Config):
@@ -101,22 +188,17 @@ class RAGSystem:
         )
         self.sql_handler = SQLHandler(cfg, self.llm, self.connection_string, engine=self.engine)
 
-        # Create the modular chains
-        self.retrieval_chain = create_retrieval_chain(self.llm, self.retriever, self.jargon_manager, self.config)
-        self.rag_chain = create_full_rag_chain(self.retrieval_chain, self.llm)
-
-        # Create the remaining chains (mostly for SQL and synthesis)
-        self.chains = create_chains(self.llm, cfg.max_sql_results)
-        if self.sql_handler:
-            self.sql_handler.multi_table_sql_chain = self.chains["multi_table_sql"]
-            self.sql_handler.sql_answer_generation_chain = self.chains["sql_answer_generation"]
+        # Create the retrieval chain
+        self.retrieval_chain = self._create_retrieval_chain()
 
         # Initialize evaluator
         self.evaluator = None  # Lazy initialization to avoid overhead when not needed
 
     def _init_llms_and_embeddings(self):
         """Initialize LLM and embedding models with Azure OpenAI."""
-        print("RAGSystem initialized with Azure OpenAI.")
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("RAGSystem initialized with Azure OpenAI.")
         self.llm = AzureChatOpenAI(
             temperature=getattr(self.config, 'llm_temperature', 0.0),
             max_tokens=getattr(self.config, 'max_tokens', 4096),
@@ -170,6 +252,189 @@ class RAGSystem:
             """))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_parent_chunk_collection ON parent_child_chunks(collection_name)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_parent_chunk_id ON parent_child_chunks(parent_chunk_id)"))
+
+    def _create_retrieval_chain(self) -> Runnable:
+        """
+        Create a modular retrieval chain with optional features:
+        - Query expansion
+        - RAG fusion (multi-query + RRF)
+        - Jargon augmentation
+        - LLM reranking
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Step 1: Extract jargon terms from query (if enabled)
+        def extract_jargon(inputs: Dict) -> Dict:
+            """Extract technical terms from the query"""
+            question = inputs["question"]
+            if not inputs.get("use_jargon_augmentation", False):
+                inputs["jargon_terms"] = []
+                return inputs
+
+            try:
+                jargon_prompt = get_jargon_extraction_prompt()
+                response = self.llm.invoke(jargon_prompt.format(query=question))
+
+                # Parse terms from response
+                import re
+                terms = re.findall(r'[ぁ-んァ-ヴー一-龠a-zA-Z0-9]+', response.content if hasattr(response, 'content') else str(response))
+                inputs["jargon_terms"] = terms[:5]  # Limit to top 5
+            except Exception as e:
+                logger.warning(f"Jargon extraction failed: {e}")
+                inputs["jargon_terms"] = []
+
+            return inputs
+
+        # Step 2: Augment query with jargon definitions
+        def augment_with_jargon(inputs: Dict) -> Dict:
+            """Augment query with technical term definitions"""
+            if not inputs.get("use_jargon_augmentation", False) or not inputs.get("jargon_terms"):
+                inputs["augmented_query"] = inputs["question"]
+                inputs["jargon_augmentation"] = {}
+                return inputs
+
+            try:
+                matched_terms = {}
+                for term in inputs["jargon_terms"]:
+                    term_info = self.jargon_manager.get_term(term)
+                    if term_info:
+                        matched_terms[term] = term_info
+
+                # Augment query with definitions
+                if matched_terms:
+                    augmentation_text = "\n".join([
+                        f"{term}: {info['definition']}"
+                        for term, info in matched_terms.items()
+                    ])
+                    inputs["augmented_query"] = f"{inputs['question']}\n\n関連用語:\n{augmentation_text}"
+                else:
+                    inputs["augmented_query"] = inputs["question"]
+
+                inputs["jargon_augmentation"] = {
+                    "matched_terms": matched_terms,
+                    "extracted_terms": inputs["jargon_terms"]
+                }
+            except Exception as e:
+                logger.warning(f"Jargon augmentation failed: {e}")
+                inputs["augmented_query"] = inputs["question"]
+                inputs["jargon_augmentation"] = {}
+
+            return inputs
+
+        # Step 3: Query expansion
+        def expand_query(inputs: Dict) -> Dict:
+            """Expand query with related queries"""
+            if not inputs.get("use_query_expansion", False) and not inputs.get("use_rag_fusion", False):
+                inputs["expanded_queries"] = [inputs.get("augmented_query", inputs["question"])]
+                inputs["query_expansion"] = {}
+                return inputs
+
+            try:
+                expansion_prompt = get_query_expansion_prompt()
+                base_query = inputs.get("augmented_query", inputs["question"])
+                response = self.llm.invoke(expansion_prompt.format(original_query=base_query))
+
+                # Parse expanded queries
+                import re
+                expanded = re.findall(r'\d+\.\s*(.+)', response.content if hasattr(response, 'content') else str(response))
+                inputs["expanded_queries"] = [base_query] + expanded[:4]  # Original + 4 variations
+                inputs["query_expansion"] = {
+                    "original_query": base_query,
+                    "expanded_queries": expanded[:4]
+                }
+            except Exception as e:
+                logger.warning(f"Query expansion failed: {e}")
+                inputs["expanded_queries"] = [inputs.get("augmented_query", inputs["question"])]
+                inputs["query_expansion"] = {}
+
+            return inputs
+
+        # Step 4: Retrieve documents (with optional RAG fusion)
+        def retrieve_documents(inputs: Dict) -> Dict:
+            """Retrieve documents using configured search type"""
+            search_type = inputs.get("search_type", "hybrid")
+            queries = inputs.get("expanded_queries", [inputs["question"]])
+
+            # Set retriever search type
+            original_search_type = getattr(self.retriever, 'search_type', 'hybrid')
+            self.retriever.search_type = search_type
+
+            try:
+                if inputs.get("use_rag_fusion", False) and len(queries) > 1:
+                    # Multi-query retrieval + RRF
+                    all_results = []
+                    for query in queries:
+                        docs = self.retriever.get_relevant_documents(query)
+                        all_results.append(docs)
+
+                    # Apply RRF
+                    inputs["documents"] = _reciprocal_rank_fusion(all_results)[:self.config.top_k]
+                    inputs["golden_retriever"] = {
+                        "enabled": True,
+                        "num_queries": len(queries),
+                        "fusion_method": "RRF"
+                    }
+                else:
+                    # Single query retrieval
+                    query = queries[0] if queries else inputs["question"]
+                    inputs["documents"] = self.retriever.get_relevant_documents(query)[:self.config.top_k]
+                    inputs["golden_retriever"] = {"enabled": False}
+
+            except Exception as e:
+                logger.error(f"Document retrieval failed: {e}")
+                inputs["documents"] = []
+                inputs["golden_retriever"] = {"enabled": False, "error": str(e)}
+            finally:
+                # Restore original search type
+                self.retriever.search_type = original_search_type
+
+            return inputs
+
+        # Step 5: Rerank documents (optional)
+        def rerank_documents(inputs: Dict) -> Dict:
+            """Rerank documents using LLM"""
+            if not inputs.get("use_reranking", False) or not inputs.get("documents"):
+                inputs["reranking"] = {"enabled": False}
+                return inputs
+
+            try:
+                original_count = len(inputs["documents"])
+                reranked_docs = _rerank_documents_with_llm(
+                    inputs["documents"],
+                    inputs["question"],
+                    self.llm,
+                    top_k=self.config.top_k
+                )
+                inputs["documents"] = reranked_docs
+                inputs["reranking"] = {
+                    "enabled": True,
+                    "original_count": original_count,
+                    "reranked_count": len(reranked_docs)
+                }
+            except Exception as e:
+                logger.warning(f"Reranking failed: {e}")
+                inputs["reranking"] = {"enabled": False, "error": str(e)}
+
+            return inputs
+
+        # Step 6: Format retrieval query for logging
+        def add_retrieval_query(inputs: Dict) -> Dict:
+            """Add the final retrieval query used"""
+            inputs["retrieval_query"] = inputs.get("augmented_query", inputs["question"])
+            return inputs
+
+        # Build the chain using RunnableLambda for each step
+        retrieval_chain = (
+            RunnableLambda(extract_jargon)
+            | RunnableLambda(augment_with_jargon)
+            | RunnableLambda(expand_query)
+            | RunnableLambda(retrieve_documents)
+            | RunnableLambda(rerank_documents)
+            | RunnableLambda(add_retrieval_query)
+        )
+
+        return retrieval_chain
 
     def delete_jargon_terms(self, terms: List[str]) -> tuple[int, int]:
         if not self.jargon_manager:
@@ -312,49 +577,11 @@ class RAGSystem:
         """Synthesize answer using both RAG and SQL results."""
         rag_results = self.query(question, search_type="hybrid")
 
-        # SQL query if handler available
-        sql_results = None
-        if self.sql_handler:
-            try:
-                sql_results = self.sql_handler.execute_nl_to_sql(question, self.sql_handler.multi_table_sql_chain)
-            except Exception as e:
-                print(f"SQL query error: {e}")
-
-        if not sql_results or "error" in sql_results:
-            # Note: retrieval_chain returns "documents" key, not "context"
-            docs = rag_results.get("documents") or rag_results.get("context", [])
-            return {
-                "answer": rag_results.get("answer", ""),
-                "source": "rag",
-                "context": docs,
-                "confidence_scores": rag_results.get("confidence_scores", []),
-                "jargon_augmentation": rag_results.get("jargon_augmentation", {}),
-                "query_expansion": rag_results.get("query_expansion", []),
-                "retrieval_query": rag_results.get("retrieval_query", question),
-                "golden_retriever": {}
-            }
-
-        # Synthesize with SQL results if available
-        synthesis_chain = self.chains.get("synthesis")
-        if synthesis_chain:
-            synthesized = synthesis_chain.invoke({
-                "question": question,
-                "rag_answer": rag_results.get("answer", "情報なし"),
-                "sql_query": sql_results.get("sql_query", ""),
-                "sql_result": sql_results.get("result", ""),
-                "sql_answer": sql_results.get("answer", "")
-            })
-            answer = synthesized
-        else:
-            answer = rag_results.get("answer", "")
-
         # Note: retrieval_chain returns "documents" key, not "context"
         docs = rag_results.get("documents") or rag_results.get("context", [])
         return {
-            "answer": answer,
-            "source": "synthesis",
-            "rag_results": rag_results,
-            "sql_results": sql_results,
+            "answer": rag_results.get("answer", ""),
+            "source": "rag",
             "context": docs,
             "confidence_scores": rag_results.get("confidence_scores", []),
             "jargon_augmentation": rag_results.get("jargon_augmentation", {}),
@@ -443,20 +670,6 @@ class RAGSystem:
                 "jargon_definitions": jargon_definitions
             }, config=config)
 
-            # Check if SQL handler should be used
-            sql_details = None
-            if self.sql_handler:
-                try:
-                    sql_result = self.sql_handler.execute_nl_to_sql(
-                        question,
-                        self.sql_handler.multi_table_sql_chain
-                    )
-                    if sql_result and "error" not in sql_result:
-                        sql_details = sql_result
-                        # Optionally synthesize SQL + RAG answer here
-                except Exception as e:
-                    print(f"SQL execution error: {e}")
-
             # Build sources from documents
             sources = []
             for doc in documents:
@@ -478,9 +691,6 @@ class RAGSystem:
                 "jargon_augmentation": retrieval_result.get("jargon_augmentation", {}),
                 "reranking": retrieval_result.get("reranking", {})
             }
-
-            if sql_details:
-                result["sql_details"] = sql_details
 
             return result
 
@@ -521,18 +731,8 @@ class RAGSystem:
         if self.evaluator is None:
             self.initialize_evaluator(similarity_method=similarity_method)
 
-        # Create a temporary retrieval chain for evaluation
-        eval_retriever = JapaneseHybridRetriever(
-            vector_store=self.vector_store,
-            connection_string=self.connection_string,
-            engine=self.engine,
-            config_params=self.config,
-            text_processor=self.text_processor
-        )
-
-        eval_chain = create_retrieval_chain(
-            self.llm, eval_retriever, self.jargon_manager, self.config
-        )
+        # Use the existing retrieval chain for evaluation
+        eval_chain = self.retrieval_chain
 
         # Run evaluation
         results = await self.evaluator.evaluate_retrieval(

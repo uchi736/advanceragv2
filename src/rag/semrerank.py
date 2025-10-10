@@ -13,6 +13,7 @@ By Incorporating Semantic Relatedness With Personalised PageRank"
 5. スコア改訂: final_score = base_score × (1 + avg_importance)
 """
 
+import json
 import logging
 import numpy as np
 import networkx as nx
@@ -103,7 +104,7 @@ class EmbeddingCache:
                         embedding_str = row.embedding
                         if isinstance(embedding_str, str):
                             # "[0.1, 0.2, ...]" -> [0.1, 0.2, ...]
-                            embedding_list = eval(embedding_str)
+                            embedding_list = json.loads(embedding_str)
                             embeddings_map[row.term] = np.array(embedding_list, dtype=np.float32)
                         else:
                             embeddings_map[row.term] = np.array(row.embedding, dtype=np.float32)

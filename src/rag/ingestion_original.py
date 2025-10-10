@@ -14,7 +14,7 @@ except ImportError:
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from .document_parser import DocumentParser
-from .pdf_processors import PyMuPDFProcessor, AzureDocumentIntelligenceProcessor
+from .pdf_processors import AzureDocumentIntelligenceProcessor
 
 class IngestionHandler:
     def __init__(self, config, vector_store, text_processor, connection_string, engine: Optional[Engine] = None):
@@ -28,21 +28,10 @@ class IngestionHandler:
         else:
             self.engine = None
         
-        # PDF処理方式の選択（後方互換性のため、DocumentParserをデフォルトとして維持）
-        pdf_processor_type = getattr(config, 'pdf_processor_type', 'legacy')
-        
-        if pdf_processor_type == 'azure_di':
-            # Azure Document Intelligenceを使用
-            self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
-            self.parser = None  # 後方互換性のため保持
-        elif pdf_processor_type == 'pymupdf':
-            # 新しいPyMuPDFプロセッサを使用
-            self.pdf_processor = PyMuPDFProcessor(config)
-            self.parser = None  # 後方互換性のため保持
-        else:
-            # レガシーモード：既存のDocumentParserを使用（デフォルト）
-            self.parser = DocumentParser(config)
-            self.pdf_processor = None
+        # Always use Azure Document Intelligence
+        self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
+        # Keep parser for backward compatibility with legacy code
+        self.parser = DocumentParser(config)
 
     def load_documents(self, paths: List[str]) -> List[Document]:
         docs: List[Document] = []

@@ -20,6 +20,19 @@ st.set_page_config(
 # ── Load Environment & Modules ─────────────────────────────────────────────
 load_dotenv()
 
+# ── Configure Logging ───────────────────────────────────────────────────────
+import logging
+import warnings
+
+# Suppress verbose logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("langchain").setLevel(logging.WARNING)
+logging.getLogger("langchain_community").setLevel(logging.WARNING)
+logging.getLogger("langchain_core").setLevel(logging.WARNING)
+
+# Suppress LangChain deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
+
 try:
     from src.core.rag_system import RAGSystem, Config
     from src.utils.style import STYLE

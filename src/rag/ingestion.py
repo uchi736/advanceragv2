@@ -20,14 +20,14 @@ class IngestionHandler:
         self.parser = None
         self.pdf_processor = None
 
-        # Initialize PDF processor based on config
-        if config.pdf_processor_type == "pymupdf":
-            from src.rag.pdf_processors.pymupdf_processor import PyMuPDFProcessor
-            self.pdf_processor = PyMuPDFProcessor(config)
-        elif config.pdf_processor_type == "azure_di":
-            from src.rag.pdf_processors.azure_di_processor import AzureDocumentIntelligenceProcessor
-            self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
-        else:
+        # Initialize Azure Document Intelligence processor
+        from src.rag.pdf_processors.azure_di_processor import AzureDocumentIntelligenceProcessor
+        self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
+        if not self.pdf_processor:
+            print("Warning: Azure Document Intelligence processor could not be initialized")
+
+        # Fallback for legacy code
+        if False:
             # Use legacy processor
             from src.rag.pdf_processors.legacy_processor import LegacyProcessor
             self.parser = LegacyProcessor()
@@ -72,10 +72,7 @@ class IngestionHandler:
 
     def chunk_documents(self, docs: List[Document]) -> List[Document]:
         """Chunk documents into smaller pieces."""
-        if not self.config.enable_parent_child_chunking:
-            return self._chunk_documents_standard(docs)
-        else:
-            return self._chunk_documents_parent_child(docs)
+        return self._chunk_documents_standard(docs)
 
     def _chunk_documents_standard(self, docs: List[Document]) -> List[Document]:
         headers_to_split_on = [
@@ -92,48 +89,45 @@ class IngestionHandler:
         )
 
         all_chunks = []
-        chunk_counter = 0
         for i, d in enumerate(docs):
             src = d.metadata.get("source", f"doc_source_{i}")
             doc_id = Path(src).name
+            chunk_counter = 0  # Reset counter for each document
+
             try:
                 # Normalize text content first
                 normalized_content = self.text_processor.normalize_text(d.page_content)
-                
+
                 # Split by markdown headers
                 md_header_splits = markdown_splitter.split_text(normalized_content)
-                
+
                 # Further split chunks that are too large
+                doc_chunks = []
                 for split in md_header_splits:
                     if len(split.page_content) > self.config.chunk_size:
                         sub_chunks = text_splitter.split_documents([split])
                         for sub_chunk in sub_chunks:
                             # Ensure metadata from header split is preserved
                             sub_chunk.metadata.update(split.metadata)
-                            all_chunks.append(sub_chunk)
+                            doc_chunks.append(sub_chunk)
                     else:
-                        all_chunks.append(split)
+                        doc_chunks.append(split)
+
+                # Add metadata to chunks for this document
+                for chunk in doc_chunks:
+                    chunk.metadata["chunk_id"] = f"{doc_id}_chunk_{chunk_counter}"
+                    chunk.metadata["document_id"] = doc_id
+                    chunk.metadata["source"] = src
+                    chunk.metadata["chunk_index"] = chunk_counter
+                    chunk.metadata["is_parent"] = False
+                    chunk_counter += 1
+                    all_chunks.append(chunk)
 
             except Exception as e:
                 print(f"Error chunking document {doc_id}: {e}")
                 continue
 
-        # Add final metadata to all chunks
-        for chunk in all_chunks:
-            src = chunk.metadata.get("source", docs[0].metadata.get("source", "unknown_source"))
-            doc_id = Path(src).name
-            chunk.metadata["chunk_id"] = f"{doc_id}_chunk_{chunk_counter}"
-            chunk.metadata["document_id"] = doc_id
-            chunk.metadata["chunk_index"] = chunk_counter
-            chunk.metadata["is_parent"] = False
-            chunk_counter += 1
-            
         return all_chunks
-
-    def _chunk_documents_parent_child(self, docs: List[Document]) -> List[Document]:
-        """Parent-child chunking implementation."""
-        # Simplified version - implement parent-child logic as needed
-        return self._chunk_documents_standard(docs)
 
     def _store_chunks_for_keyword_search(self, chunks: List[Document]):
         """Store chunks in PostgreSQL for keyword search."""

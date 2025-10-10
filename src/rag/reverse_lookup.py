@@ -67,15 +67,18 @@ class ReverseLookupEngine:
 
             # Add to reverse dictionary
             for phrase in key_phrases:
-                if phrase not in self.reverse_dict:
-                    self.reverse_dict[phrase.lower()] = []
-                self.reverse_dict[phrase.lower()].append(term)
+                phrase_lower = phrase.lower()
+                if phrase_lower not in self.reverse_dict:
+                    self.reverse_dict[phrase_lower] = []
+                self.reverse_dict[phrase_lower].append(term)
 
             # Add synonyms to reverse dictionary
             for synonym in synonyms:
-                if synonym and synonym.lower() not in self.reverse_dict:
-                    self.reverse_dict[synonym.lower()] = []
-                    self.reverse_dict[synonym.lower()].append(term)
+                if synonym:
+                    synonym_lower = synonym.lower()
+                    if synonym_lower not in self.reverse_dict:
+                        self.reverse_dict[synonym_lower] = []
+                    self.reverse_dict[synonym_lower].append(term)
 
         # Build pattern dictionary for common transformations
         self._build_pattern_dictionary()

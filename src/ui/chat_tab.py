@@ -270,17 +270,42 @@ def _render_query_info():
                 if retriever_info.get("fusion_method"):
                     st.write(f"統合方法: {retriever_info['fusion_method']}")
 
+def _extract_chunk_number(source):
+    """Extract numeric chunk index from chunk_id for sorting."""
+    try:
+        # Handle both dict and Document objects
+        if isinstance(source, dict):
+            metadata = source.get('metadata', {})
+        else:
+            metadata = source.metadata if hasattr(source, 'metadata') and source.metadata is not None else {}
+
+        if not isinstance(metadata, dict):
+            return float('inf')  # Put invalid entries at the end
+
+        chunk_id = metadata.get('chunk_id', '')
+        # Extract number from patterns like "filename_chunk_10"
+        import re
+        match = re.search(r'_chunk_(\d+)$', str(chunk_id))
+        if match:
+            return int(match.group(1))
+        return float('inf')
+    except:
+        return float('inf')
+
 def _render_sources():
     """Renders the source documents for the last response."""
     st.markdown("""<div style="position: sticky; top: 1rem;"><h4 style="color: var(--text-primary); margin-bottom: 1rem;">📚 参照ソース (RAG)</h4></div>""", unsafe_allow_html=True)
     if st.session_state.current_sources:
-        for i, source in enumerate(st.session_state.current_sources):
+        # Sort sources by numeric chunk index
+        sorted_sources = sorted(st.session_state.current_sources, key=_extract_chunk_number)
+        for i, source in enumerate(sorted_sources):
             # Handle both dict and Document objects
             if isinstance(source, dict):
                 metadata = source.get('metadata', {})
                 page_content = source.get('content', '')  # RAG system returns 'content' key
             else:
-                metadata = source.metadata if hasattr(source, 'metadata') else {}
+                # Check if metadata exists and is not None
+                metadata = source.metadata if hasattr(source, 'metadata') and source.metadata is not None else {}
                 page_content = source.page_content if hasattr(source, 'page_content') else ''
 
             # Ensure metadata is a dict (could be None)

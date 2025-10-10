@@ -20,7 +20,7 @@ def initialize_session_state():
     if "use_rag_fusion" not in st.session_state:
         st.session_state.use_rag_fusion = False
     if "use_jargon_augmentation" not in st.session_state:
-        st.session_state.use_jargon_augmentation = os.getenv("ENABLE_JARGON_EXTRACTION", "true").lower() == "true"
+        st.session_state.use_jargon_augmentation = False
     if "use_reranking" not in st.session_state:
         st.session_state.use_reranking = os.getenv("ENABLE_RERANKING", "false").lower() == "true"
     if "search_type" not in st.session_state:
