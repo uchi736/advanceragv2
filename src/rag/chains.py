@@ -8,11 +8,7 @@ from .prompts import (
     get_query_augmentation_prompt,
     get_query_expansion_prompt,
     get_reranking_prompt,
-    get_answer_generation_prompt,
-    get_semantic_router_prompt,
-    get_multi_table_text_to_sql_prompt,
-    get_sql_answer_generation_prompt,
-    get_synthesis_prompt
+    get_answer_generation_prompt
 )
 
 # Forward declaration to avoid circular import
@@ -234,114 +230,6 @@ def create_retrieval_chain(
     return retrieval_chain
 
 
-def create_sql_chain(llm: Runnable, sql_handler: Any) -> Runnable:
-    """
-    Creates a chain for natural language to SQL conversion and execution.
-    """
-    if not sql_handler:
-        return None
-
-    multi_table_prompt = get_multi_table_text_to_sql_prompt(sql_handler.multi_table_schema)
-    sql_generation_chain = multi_table_prompt | llm | StrOutputParser()
-
-    def execute_sql_query(input_dict: dict) -> dict:
-        """Execute SQL query and return results."""
-        question = input_dict["question"]
-
-        try:
-            # Generate SQL
-            sql_query = sql_generation_chain.invoke({"question": question})
-
-            # Execute SQL
-            results = sql_handler.execute_query(sql_query)
-
-            # Generate answer from SQL results
-            sql_answer_prompt = get_sql_answer_generation_prompt()
-            sql_answer_chain = sql_answer_prompt | llm | StrOutputParser()
-
-            answer = sql_answer_chain.invoke({
-                "question": question,
-                "sql_query": sql_query,
-                "results": results
-            })
-
-            return {
-                "sql_query": sql_query,
-                "results": results,
-                "answer": answer,
-                "status": "success"
-            }
-        except Exception as e:
-            return {
-                "error": str(e),
-                "status": "failed"
-            }
-
-    return RunnableLambda(execute_sql_query)
-
-
-def create_hybrid_chain(
-    llm: Runnable,
-    retriever: JapaneseHybridRetriever,
-    jargon_manager: JargonDictionaryManager,
-    sql_handler: Any,
-    config_obj: Any
-) -> Runnable:
-    """
-    Creates a hybrid chain that combines retrieval and SQL capabilities.
-    """
-    retrieval_chain = create_retrieval_chain(llm, retriever, jargon_manager, config_obj)
-    sql_chain = create_sql_chain(llm, sql_handler) if sql_handler else None
-
-    # Router to determine whether to use SQL, RAG, or both
-    router_prompt = get_semantic_router_prompt()
-    router_chain = router_prompt | llm | JsonOutputParser()
-
-    def route_query(input_dict: dict) -> dict:
-        """Route query to appropriate handler(s)."""
-        question = input_dict["question"]
-
-        # Get routing decision
-        routing = router_chain.invoke({"question": question})
-        route_type = routing.get("route", "retrieval")
-
-        result = {"question": question}
-
-        if route_type == "sql" and sql_chain:
-            # SQL only
-            sql_result = sql_chain.invoke(input_dict)
-            result["sql_result"] = sql_result
-            result["documents"] = []
-        elif route_type == "both" and sql_chain:
-            # Both SQL and retrieval
-            retrieval_result = retrieval_chain.invoke(input_dict)
-            sql_result = sql_chain.invoke(input_dict)
-            result.update(retrieval_result)
-            result["sql_result"] = sql_result
-
-            # Synthesize answers if both succeeded
-            if sql_result.get("status") == "success" and retrieval_result.get("documents"):
-                synthesis_prompt = get_synthesis_prompt()
-                synthesis_chain = synthesis_prompt | llm | StrOutputParser()
-
-                synthesized = synthesis_chain.invoke({
-                    "question": question,
-                    "rag_answer": _format_docs(retrieval_result["documents"]),
-                    "sql_answer": sql_result["answer"]
-                })
-                result["synthesized_answer"] = synthesized
-        else:
-            # Retrieval only (default)
-            retrieval_result = retrieval_chain.invoke(input_dict)
-            result.update(retrieval_result)
-            result["sql_result"] = None
-
-        result["route"] = route_type
-        return result
-
-    return RunnableLambda(route_query)
-
-
 def create_full_rag_chain(retrieval_chain: Runnable, llm: Runnable) -> Runnable:
     """Creates the final answer generation part of the RAG chain."""
     answer_generation_prompt = get_answer_generation_prompt()
@@ -358,25 +246,3 @@ def create_full_rag_chain(retrieval_chain: Runnable, llm: Runnable) -> Runnable:
         )
     )
     return full_chain
-
-
-def create_chains(llm, max_sql_results: int) -> dict:
-    """Creates and returns a dictionary of all LangChain runnables for SQL and Synthesis."""
-    semantic_router_prompt = get_semantic_router_prompt()
-    semantic_router_chain = semantic_router_prompt | llm | JsonOutputParser()
-
-    multi_table_text_to_sql_prompt = get_multi_table_text_to_sql_prompt(max_sql_results)
-    multi_table_sql_chain = multi_table_text_to_sql_prompt | llm | StrOutputParser()
-
-    sql_answer_generation_prompt = get_sql_answer_generation_prompt()
-    sql_answer_generation_chain = sql_answer_generation_prompt | llm | StrOutputParser()
-
-    synthesis_prompt = get_synthesis_prompt()
-    synthesis_chain = synthesis_prompt | llm | StrOutputParser()
-
-    return {
-        "semantic_router": semantic_router_chain,
-        "multi_table_sql": multi_table_sql_chain,
-        "sql_answer_generation": sql_answer_generation_chain,
-        "synthesis": synthesis_chain,
-    }

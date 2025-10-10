@@ -8,11 +8,7 @@ from .prompts import (
     get_query_augmentation_prompt,
     get_query_expansion_prompt,
     get_reranking_prompt,
-    get_answer_generation_prompt,
-    get_semantic_router_prompt,
-    get_multi_table_text_to_sql_prompt,
-    get_sql_answer_generation_prompt,
-    get_synthesis_prompt
+    get_answer_generation_prompt
 )
 
 # Forward declaration to avoid circular import
@@ -220,24 +216,3 @@ def create_full_rag_chain(retrieval_chain: Runnable, llm: Runnable) -> Runnable:
         )
     )
     return full_chain
-
-def create_chains(llm, max_sql_results: int) -> dict:
-    """Creates and returns a dictionary of all LangChain runnables for SQL and Synthesis."""
-    semantic_router_prompt = get_semantic_router_prompt()
-    semantic_router_chain = semantic_router_prompt | llm | JsonOutputParser()
-
-    multi_table_text_to_sql_prompt = get_multi_table_text_to_sql_prompt(max_sql_results)
-    multi_table_sql_chain = multi_table_text_to_sql_prompt | llm | StrOutputParser()
-
-    sql_answer_generation_prompt = get_sql_answer_generation_prompt()
-    sql_answer_generation_chain = sql_answer_generation_prompt | llm | StrOutputParser()
-
-    synthesis_prompt = get_synthesis_prompt()
-    synthesis_chain = synthesis_prompt | llm | StrOutputParser()
-
-    return {
-        "semantic_router": semantic_router_chain,
-        "multi_table_sql": multi_table_sql_chain,
-        "sql_answer_generation": sql_answer_generation_chain,
-        "synthesis": synthesis_chain,
-    }
