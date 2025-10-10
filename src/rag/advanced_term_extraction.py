@@ -307,7 +307,18 @@ class AdvancedStatisticalExtractor:
 
             # 名詞または接頭辞の場合
             if pos in ['名詞', '接頭辞']:
-                current_compound.append(token.surface())
+                surface = token.surface()
+                # 数字のみのトークンは複合語を区切る（18, 2050などを除外）
+                if re.match(r'^\d+\.?\d*$', surface):
+                    # 現在の複合語を処理して終了
+                    if len(current_compound) >= self.min_term_length:
+                        compound = ''.join(current_compound)
+                        if self._is_valid_term(compound):
+                            compound_nouns[compound] += 1
+                    current_compound = []
+                else:
+                    # 通常の名詞は複合語に追加
+                    current_compound.append(surface)
             else:
                 # 複合名詞が終了
                 if len(current_compound) >= self.min_term_length:

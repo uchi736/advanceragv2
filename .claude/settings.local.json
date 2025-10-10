@@ -8,7 +8,8 @@
       "Bash(timeout 60 myenv/Scripts/python.exe:*)",
       "Bash(timeout 120 myenv/Scripts/python.exe:*)",
       "Bash(timeout:*)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "Bash(myenv/Scripts/python.exe -c \"\nfrom sudachipy import tokenizer, dictionary\ntok = dictionary.Dictionary().create()\nfor text in [''18コンプレッサ'', ''2050年カーボンニュートラル'']:\n    print(f''\\n{text}:'')\n    for t in tok.tokenize(text, tokenizer.Tokenizer.SplitMode.A):\n        print(f''  {t.surface()} -> {t.part_of_speech()[0]}'')\n\")"
     ],
     "deny": [],
     "ask": []
