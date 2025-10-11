@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain.schema import Document
-from langchain_community.document_loaders import TextLoader, Docx2txtLoader
+from langchain_community.document_loaders import TextLoader
 from src.rag.text_processor import JapaneseTextProcessor
 from sqlalchemy import text
 
@@ -50,9 +50,6 @@ class IngestionHandler:
                 docs = self.pdf_processor.process(path)
             elif suf in {".txt", ".md"}:
                 docs.extend(TextLoader(path, encoding="utf-8").load())
-            elif suf == ".docx":
-                docs.extend(Docx2txtLoader(path).load())
-            # Add more formats as needed
         except Exception as e:
             print(f"Error loading {path}: {type(e).__name__} - {e}")
 

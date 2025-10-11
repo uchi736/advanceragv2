@@ -21,10 +21,7 @@ from sqlalchemy.engine import Engine
 from sudachipy import tokenizer, dictionary
 
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from langchain_community.document_loaders import (
-    Docx2txtLoader,
-    TextLoader,
-)
+from langchain_community.document_loaders import TextLoader
 try:
     from langchain_community.document_loaders import PyPDFLoader
 except ImportError:  # pragma: no cover - optional dependency
@@ -318,8 +315,6 @@ class TermExtractor:
         ext = file_path.suffix.lower()
         if ext in ['.txt', '.md']:
             return TextLoader(str(file_path), encoding="utf-8")
-        if ext in ['.doc', '.docx']:
-            return Docx2txtLoader(str(file_path))
         if ext == '.pdf':
             docs = self._load_pdf_documents(file_path)
             return _InMemoryLoader(docs)
@@ -888,7 +883,7 @@ async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, ll
     extractor = TermExtractor(config, llm, embeddings, vector_store, pg_url, jargon_table_name)
 
     # ファイルの検索
-    supported_exts = ['.txt', '.md', '.doc', '.docx', '.pdf']
+    supported_exts = ['.txt', '.md', '.pdf']
     files = [p for ext in supported_exts for p in input_dir.glob(f"**/*{ext}")]
 
     if not files:

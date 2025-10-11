@@ -15,9 +15,9 @@ def render_documents_tab(rag_system):
     st.info(f"📑 PDF処理方式: **Azure Document Intelligence**")
     
     uploaded_docs = st.file_uploader(
-        "ファイルを選択またはドラッグ&ドロップ (.pdf, .txt, .md, .docx, .doc)",
+        "ファイルを選択またはドラッグ&ドロップ (.pdf, .txt, .md)",
         accept_multiple_files=True,
-        type=["pdf", "txt", "md", "docx", "doc"],
+        type=["pdf", "txt", "md"],
         label_visibility="collapsed",
         key=f"doc_uploader_v7_tab_documents_{rag_system.config.collection_name}"
     )
