@@ -6,7 +6,7 @@ from typing import Optional
 class SQLHandler:
     """Simplified SQL handler for document chunk retrieval."""
 
-    def __init__(self, config, llm, connection_string, engine: Optional[Engine] = None):
+    def __init__(self, config, connection_string, engine: Optional[Engine] = None):
         self.config = config
         self.connection_string = connection_string
         self.engine: Engine = engine or create_engine(connection_string)
