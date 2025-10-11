@@ -1,6 +1,7 @@
 """
 Document ingestion handler with improved batch processing and connection management.
 """
+import json
 from pathlib import Path
 from typing import List
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
