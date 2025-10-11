@@ -1,7 +1,6 @@
 """
 Document ingestion handler with improved batch processing and connection management.
 """
-import json
 from pathlib import Path
 from typing import List
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
@@ -17,20 +16,12 @@ class IngestionHandler:
         self.vector_store = vector_store
         self.engine = engine
         self.text_processor = text_processor if text_processor else JapaneseTextProcessor()
-        self.parser = None
-        self.pdf_processor = None
 
         # Initialize Azure Document Intelligence processor
         from src.rag.pdf_processors.azure_di_processor import AzureDocumentIntelligenceProcessor
         self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
         if not self.pdf_processor:
             print("Warning: Azure Document Intelligence processor could not be initialized")
-
-        # Fallback for legacy code
-        if False:
-            # Use legacy processor
-            from src.rag.pdf_processors.legacy_processor import LegacyProcessor
-            self.parser = LegacyProcessor()
 
     def load_documents(self, paths: List[str]) -> List[Document]:
         all_docs = []
@@ -54,12 +45,8 @@ class IngestionHandler:
 
         try:
             if suf == ".pdf":
-                if self.pdf_processor:
-                    # Use Azure Document Intelligence processor
-                    docs = self.pdf_processor.process(path)
-                else:
-                    # Use legacy processor
-                    docs = self.parser.parse_pdf(path)
+                # Use Azure Document Intelligence processor
+                docs = self.pdf_processor.process(path)
             elif suf in {".txt", ".md"}:
                 docs.extend(TextLoader(path, encoding="utf-8").load())
             elif suf == ".docx":
