@@ -21,11 +21,6 @@ from sqlalchemy.engine import Engine
 from sudachipy import tokenizer, dictionary
 
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from langchain_community.document_loaders import TextLoader
-try:
-    from langchain_community.document_loaders import PyPDFLoader
-except ImportError:  # pragma: no cover - optional dependency
-    PyPDFLoader = None
 from langchain_community.vectorstores import PGVector
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
@@ -311,17 +306,12 @@ class TermExtractor:
         return terms
 
     def _get_loader(self, file_path: Path):
-        """ファイルタイプに応じたローダーを返す"""
-        ext = file_path.suffix.lower()
-        if ext in ['.txt', '.md']:
-            return TextLoader(str(file_path), encoding="utf-8")
-        if ext == '.pdf':
-            docs = self._load_pdf_documents(file_path)
-            return _InMemoryLoader(docs)
-        raise ValueError(f"Unsupported file extension: {ext}")
+        """ファイルタイプに応じたローダーを返す - Azure DI一択"""
+        docs = self._load_pdf_documents(file_path)
+        return _InMemoryLoader(docs)
 
     def _load_pdf_documents(self, file_path: Path) -> List[Document]:
-        """PDFを設定に応じて読み込み、Documentのリストを返す"""
+        """Azure Document Intelligenceでドキュメントを読み込む"""
         docs: List[Document] = []
 
         if self.pdf_processor is not None:

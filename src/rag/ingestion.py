@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import List
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain.schema import Document
-from langchain_community.document_loaders import TextLoader
 from src.rag.text_processor import JapaneseTextProcessor
 from sqlalchemy import text
 
@@ -45,11 +44,8 @@ class IngestionHandler:
         suf = p.suffix.lower()
 
         try:
-            if suf == ".pdf":
-                # Use Azure Document Intelligence processor
-                docs = self.pdf_processor.process(path)
-            elif suf in {".txt", ".md"}:
-                docs.extend(TextLoader(path, encoding="utf-8").load())
+            # Use Azure Document Intelligence processor for all file types
+            docs = self.pdf_processor.process(path)
         except Exception as e:
             print(f"Error loading {path}: {type(e).__name__} - {e}")
 
