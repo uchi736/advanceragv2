@@ -712,7 +712,8 @@ class TermExtractor:
                 "score": term.score,
                 "definition": term.definition,
                 "frequency": term.frequency,
-                "synonyms": term.synonyms,
+                "synonyms": term.variants if hasattr(term, 'variants') else term.synonyms,  # 表記ゆれ
+                "related_terms": term.related_terms if hasattr(term, 'related_terms') else [],  # 関連語
                 "metadata": term.metadata,
                 "tfidf_score": term.tfidf_score,
                 "cvalue_score": term.cvalue_score
@@ -883,9 +884,8 @@ class TermExtractor:
 
     def save_to_database(self, terms: List[Dict]) -> int:
         """抽出した用語をデータベースに保存"""
-        # Skip if no PostgreSQL connection (ChromaDB mode)
         if not self.pg_url:
-            logger.info("Skipping database save - no PostgreSQL connection available")
+            logger.warning("No PostgreSQL connection available")
             return 0
 
         engine = create_engine(self.pg_url)
@@ -896,17 +896,19 @@ class TermExtractor:
                 try:
                     conn.execute(
                         text(f"""
-                            INSERT INTO {self.jargon_table_name} (term, definition, aliases)
-                            VALUES (:term, :definition, :aliases)
+                            INSERT INTO {self.jargon_table_name} (term, definition, aliases, related_terms)
+                            VALUES (:term, :definition, :aliases, :related_terms)
                             ON CONFLICT (term) DO UPDATE
                             SET definition = EXCLUDED.definition,
                                 aliases = EXCLUDED.aliases,
+                                related_terms = EXCLUDED.related_terms,
                                 updated_at = CURRENT_TIMESTAMP
                         """),
                         {
                             "term": term.get("headword"),
                             "definition": term.get("definition", ""),
-                            "aliases": term.get("synonyms", [])
+                            "aliases": term.get("synonyms", []),
+                            "related_terms": term.get("related_terms", [])
                         }
                     )
                     saved_count += 1
@@ -918,7 +920,7 @@ class TermExtractor:
 
 
 # ========== Utility Functions ==========
-async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, llm, embeddings, vector_store, pg_url, jargon_table_name, jargon_manager=None):
+async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, llm, embeddings, vector_store, pg_url, jargon_table_name):
     """専門用語抽出パイプラインの実行"""
     extractor = TermExtractor(config, llm, embeddings, vector_store, pg_url, jargon_table_name)
 
@@ -942,24 +944,42 @@ async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, ll
 
     logger.info(f"Saved {len(terms)} terms to {output_json}")
 
-    # データベースまたはChromaDBに保存
+    # PostgreSQLに保存
     if terms:
-        if jargon_manager:
-            # ChromaDB jargon managerに保存
-            saved_count = 0
-            for term in terms:
-                success = jargon_manager.add_term(
-                    term=term.get("headword", ""),
-                    definition=term.get("definition", ""),
-                    aliases=term.get("synonyms", []),
-                    related_terms=[]
-                )
-                if success:
-                    saved_count += 1
-            logger.info(f"Saved {saved_count} terms to ChromaDB jargon manager")
-        else:
-            # PostgreSQLに保存
-            extractor.save_to_database(terms)
+        extractor.save_to_database(terms)
+
+        # HDBSCAN意味ベース類義語抽出
+        logger.info("Starting semantic synonym extraction with HDBSCAN...")
+        try:
+            from ..scripts.extract_semantic_synonyms import (
+                load_specialized_terms,
+                load_candidate_terms_from_extraction,
+                extract_and_save_semantic_synonyms
+            )
+
+            # 候補用語の読み込み（デバッグファイルから）
+            debug_file = output_json.parent / "term_extraction_debug.json"
+            if debug_file.exists():
+                # 専門用語と候補用語を読み込み
+                specialized_terms = load_specialized_terms(pg_url, jargon_table_name)
+                candidate_terms = load_candidate_terms_from_extraction(debug_file)
+
+                if specialized_terms and candidate_terms:
+                    # 類義語抽出と保存
+                    synonyms_dict = await extract_and_save_semantic_synonyms(
+                        specialized_terms=specialized_terms,
+                        candidate_terms=candidate_terms,
+                        pg_url=pg_url,
+                        jargon_table_name=jargon_table_name,
+                        embeddings=embeddings
+                    )
+                    logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
+                else:
+                    logger.warning("No specialized or candidate terms found for semantic synonym extraction")
+            else:
+                logger.warning(f"Debug file not found: {debug_file}")
+        except Exception as e:
+            logger.error(f"Error in semantic synonym extraction: {e}", exc_info=True)
 
 
 __all__ = [

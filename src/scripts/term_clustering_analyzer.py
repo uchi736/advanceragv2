@@ -58,15 +58,19 @@ llm = AzureChatOpenAI(
 # ── Term Clustering Analyzer ──────────────────────
 class TermClusteringAnalyzer:
     """専門用語のクラスタリング分析クラス"""
-    
-    def __init__(self, connection_string: str, min_terms: int = 3):
+
+    def __init__(self, connection_string: str, min_terms: int = 3, jargon_table_name: str = None, embeddings=None):
         """
         Args:
             connection_string: PostgreSQL接続文字列
             min_terms: クラスタリングを実行する最小用語数
+            jargon_table_name: 専門用語テーブル名（デフォルトはJARGON_TABLE_NAME）
+            embeddings: AzureOpenAIEmbeddings instance（デフォルトはグローバル変数）
         """
         self.connection_string = connection_string
         self.min_terms = min_terms
+        self.jargon_table_name = jargon_table_name or JARGON_TABLE_NAME
+        self.embeddings = embeddings or globals()['embeddings']
         self.terms_data = []
         self.embeddings_matrix = None
         self.clusters = None
@@ -77,7 +81,7 @@ class TermClusteringAnalyzer:
         engine = create_engine(self.connection_string)
         query = text(f"""
             SELECT term, definition, domain, aliases
-            FROM {JARGON_TABLE_NAME}
+            FROM {self.jargon_table_name}
             ORDER BY term
         """)
         
@@ -222,7 +226,165 @@ class TermClusteringAnalyzer:
                 cluster_names[cluster_id] = f"クラスタ{cluster_id}"
         
         return cluster_names
-    
+
+    def extract_semantic_synonyms_hybrid(
+        self,
+        specialized_terms: List[Dict[str, Any]],
+        candidate_terms: List[Dict[str, Any]],
+        similarity_threshold: float = 0.85,
+        max_synonyms: int = 5
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        2段階エンベディングによる意味ベース類義語抽出
+
+        Args:
+            specialized_terms: 専門用語リスト [{"term": "ETC", "definition": "...", "text": "ETC: ..."}]
+            candidate_terms: 候補用語リスト [{"term": "過給機", "text": "過給機"}]
+            similarity_threshold: コサイン類似度の閾値
+            max_synonyms: 各用語の最大類義語数
+
+        Returns:
+            {
+                "ETC": [
+                    {"term": "電動ターボチャージャ", "similarity": 0.92, "is_specialized": True},
+                    {"term": "過給機", "similarity": 0.87, "is_specialized": False}
+                ]
+            }
+        """
+        logger.info(f"Starting hybrid semantic synonym extraction: {len(specialized_terms)} specialized, {len(candidate_terms)} candidates")
+
+        # 1. エンベディング生成（2段階）
+        logger.info("Generating embeddings for specialized terms (term + definition)...")
+        spec_texts = [t['text'] for t in specialized_terms]
+        spec_embeddings_list = self.embeddings.embed_documents(spec_texts)
+        spec_embeddings = np.array(spec_embeddings_list)
+
+        logger.info("Generating embeddings for candidate terms (term only)...")
+        cand_texts = [t['text'] for t in candidate_terms]
+        cand_embeddings_list = self.embeddings.embed_documents(cand_texts)
+        cand_embeddings = np.array(cand_embeddings_list)
+
+        # 2. 統合
+        all_embeddings = np.vstack([spec_embeddings, cand_embeddings])
+        all_terms = specialized_terms + candidate_terms
+        logger.info(f"Combined embeddings shape: {all_embeddings.shape}")
+
+        # 3. 正規化（コサイン類似度用）
+        normalized_embeddings = normalize(all_embeddings, norm='l2')
+
+        # 4. UMAP次元圧縮
+        logger.info("Applying UMAP dimensional reduction...")
+        umap_reducer = umap.UMAP(
+            n_components=20,
+            n_neighbors=15,
+            min_dist=0.1,
+            metric='cosine',
+            random_state=42
+        )
+        reduced_embeddings = umap_reducer.fit_transform(normalized_embeddings)
+        logger.info(f"UMAP reduction complete: shape {reduced_embeddings.shape}")
+
+        # 5. HDBSCANクラスタリング
+        logger.info("Performing HDBSCAN clustering...")
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=2,
+            min_samples=1,
+            cluster_selection_epsilon=0.3,
+            cluster_selection_method='leaf',
+            metric='euclidean',
+            allow_single_cluster=True,
+            prediction_data=True
+        )
+        clusters = clusterer.fit_predict(reduced_embeddings)
+
+        n_clusters = len([c for c in set(clusters) if c >= 0])
+        n_noise = sum(1 for c in clusters if c == -1)
+        logger.info(f"Clustering complete: {n_clusters} clusters, {n_noise} noise points")
+
+        # 6. 専門用語ごとに類義語抽出
+        synonyms_dict = {}
+        spec_count = len(specialized_terms)
+
+        for idx in range(spec_count):
+            spec_term = specialized_terms[idx]
+            term_name = spec_term['term']
+            cluster_id = clusters[idx]
+
+            # ノイズクラスタはスキップ
+            if cluster_id == -1:
+                logger.debug(f"Term '{term_name}' is in noise cluster, skipping")
+                continue
+
+            # 同一クラスタ内の他の用語を検索
+            same_cluster_indices = [
+                i for i, c in enumerate(clusters)
+                if c == cluster_id and i != idx
+            ]
+
+            if not same_cluster_indices:
+                continue
+
+            # コサイン類似度を計算
+            term_embedding = normalized_embeddings[idx]
+            similarities = []
+
+            for other_idx in same_cluster_indices:
+                other_embedding = normalized_embeddings[other_idx]
+                # コサイン類似度（正規化済みなので内積）
+                similarity = float(np.dot(term_embedding, other_embedding))
+
+                if similarity >= similarity_threshold:
+                    other_term = all_terms[other_idx]
+                    is_specialized = other_idx < spec_count
+
+                    similarities.append({
+                        'term': other_term['term'],
+                        'similarity': similarity,
+                        'is_specialized': is_specialized
+                    })
+
+            # 類似度順にソート
+            similarities.sort(key=lambda x: x['similarity'], reverse=True)
+
+            # 上位N個のみ保存
+            if similarities:
+                synonyms_dict[term_name] = similarities[:max_synonyms]
+                logger.debug(f"Found {len(similarities[:max_synonyms])} synonyms for '{term_name}'")
+
+        logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
+        return synonyms_dict
+
+    def update_semantic_synonyms_to_db(self, synonyms_dict: Dict[str, List[Dict[str, Any]]]):
+        """
+        抽出した意味的類義語をDBに保存
+
+        Args:
+            synonyms_dict: extract_semantic_synonyms_hybrid()の出力
+        """
+        engine = create_engine(self.connection_string)
+
+        updated_count = 0
+        with engine.begin() as conn:
+            for term, synonyms in synonyms_dict.items():
+                # 類義語のリスト（用語名のみ）
+                synonym_terms = [s['term'] for s in synonyms]
+
+                try:
+                    conn.execute(
+                        text(f"""
+                            UPDATE {self.jargon_table_name}
+                            SET semantic_synonyms = :synonyms
+                            WHERE term = :term
+                        """),
+                        {"term": term, "synonyms": synonym_terms}
+                    )
+                    updated_count += 1
+                except Exception as e:
+                    logger.error(f"Error updating semantic synonyms for term '{term}': {e}")
+
+        logger.info(f"Updated semantic synonyms for {updated_count} terms in database")
+        return updated_count
+
     async def analyze_and_save(self, output_path: str = "output/term_clusters.json", include_hierarchy: bool = True, use_llm_naming: bool = False) -> Dict[str, Any]:
         """完全な分析を実行して結果を保存"""
         

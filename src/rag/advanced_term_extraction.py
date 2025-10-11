@@ -322,7 +322,8 @@ class AdvancedStatisticalExtractor:
                     # 助数詞でない場合は複合語を区切る
                     if len(current_compound) >= self.min_term_length:
                         compound = ''.join(current_compound)
-                        if self._is_valid_term(compound):
+                        # 複合語の最大長チェック（15文字以内）
+                        if len(compound) <= 15 and self._is_valid_term(compound):
                             compound_nouns[compound] += 1
                     current_compound = []
                 else:
@@ -332,14 +333,16 @@ class AdvancedStatisticalExtractor:
                 # 複合名詞が終了
                 if len(current_compound) >= self.min_term_length:
                     compound = ''.join(current_compound)
-                    if self._is_valid_term(compound):
+                    # 複合語の最大長チェック（15文字以内）
+                    if len(compound) <= 15 and self._is_valid_term(compound):
                         compound_nouns[compound] += 1
                 current_compound = []
 
         # 最後の複合名詞
         if len(current_compound) >= self.min_term_length:
             compound = ''.join(current_compound)
-            if self._is_valid_term(compound):
+            # 複合語の最大長チェック（15文字以内）
+            if len(compound) <= 15 and self._is_valid_term(compound):
                 compound_nouns[compound] += 1
 
         return compound_nouns
@@ -352,6 +355,10 @@ class AdvancedStatisticalExtractor:
 
         # 図表番号パターンを除外（第3図、第1表、第2式など）
         if re.match(r'^第\d+[図表式]', term):
+            return False
+
+        # 図表番号を含む用語を除外（第7図単段ETC等、テキスト処理で連結された場合）
+        if re.search(r'第\d+[図表式]', term):
             return False
 
         # 助詞・助動詞ブラックリスト
@@ -405,10 +412,20 @@ class AdvancedStatisticalExtractor:
 
         # 汎用語ブラックリスト拡充
         generic_terms = {
+            # 日本語汎用語
             'エリア', 'モード', 'こと', 'もの', 'ため', 'よう', 'など',
             'について', 'により', 'における', 'として', 'による',
             'それ', 'これ', 'あれ', 'その', 'この', 'あの',
-            'とき', 'とこ', 'ところ', 'ほか', 'さらに', 'また', 'および'
+            'とき', 'とこ', 'ところ', 'ほか', 'さらに', 'また', 'および',
+            # 英語汎用語・略語（小文字も含む）
+            'and', 'the', 'of', 'in', 'for', 'with', 'from', 'to', 'at', 'by',
+            'stage', 'fig', 'figure', 'table', 'exterior', 'interior', 'single',
+            'system', 'Fig', 'Table', 'Stage', 'System', 'Exterior', 'Interior', 'Single',
+            # 不完全な用語（語尾切れ）
+            'システ', 'インタ', 'クーラ', 'アシスト', 'モータ', 'ロータ',
+            'タービン', 'コンプレッサ', 'スタック', 'カモータ',
+            # 図表関連（接尾辞ではなく名詞として認識されるため）
+            '図', '表', '式'
         }
         if term in generic_terms:
             return False
@@ -427,6 +444,21 @@ class AdvancedStatisticalExtractor:
             if reconstructed != term:
                 logger.debug(f"Incomplete term detected: {term} != {reconstructed}")
                 return False
+
+            # 先頭トークンのチェック
+            if tokens:
+                first_token = tokens[0]
+                first_pos = first_token.part_of_speech()
+                first_surface = first_token.surface()
+
+                # 図/表/式で始まる複合語を除外（図単段ETC等）
+                # ※「図」は接尾辞ではなく名詞として認識されるため、表面形でチェック
+                if first_surface in ['図', '表', '式'] and len(tokens) > 1:
+                    return False
+
+                # 助数詞で始まる場合は除外（段コンプレッサ等）
+                if len(first_pos) > 2 and first_pos[2] and '助数詞' in first_pos[2]:
+                    return False
 
             for token in tokens:
                 pos = token.part_of_speech()[0]
@@ -469,17 +501,22 @@ class AdvancedStatisticalExtractor:
         Returns:
             用語と表記ゆれのマッピング
         """
+        # 候補を事前フィルタリング（不完全用語を除外）
+        valid_candidates = [c for c in candidates if self._is_valid_term(c)]
+
         variants = defaultdict(set)
 
-        for i, cand1 in enumerate(candidates):
-            for cand2 in candidates[i+1:]:
+        for i, cand1 in enumerate(valid_candidates):
+            for cand2 in valid_candidates[i+1:]:
                 if len(cand1) >= 3 and len(cand2) >= 3:
                     # Levenshtein比率で類似度計算
                     similarity = SequenceMatcher(None, cand1, cand2).ratio()
                     # 閾値: 0.85-0.98（完全一致1.0は除外）
                     if 0.85 < similarity < 0.98:
-                        variants[cand1].add(cand2)
-                        variants[cand2].add(cand1)
+                        # 両方の用語が有効かチェック
+                        if self._is_valid_term(cand1) and self._is_valid_term(cand2):
+                            variants[cand1].add(cand2)
+                            variants[cand2].add(cand1)
 
         return {k: list(v) for k, v in variants.items() if v}
 
@@ -498,13 +535,16 @@ class AdvancedStatisticalExtractor:
         Returns:
             用語と関連語のマッピング
         """
+        # 候補を事前フィルタリング（不完全用語を除外）
+        valid_candidates = [c for c in candidates if self._is_valid_term(c)]
+
         related = defaultdict(set)
 
         # 1. 包含関係（上位語/下位語）
-        for i, cand1 in enumerate(candidates):
+        for i, cand1 in enumerate(valid_candidates):
             if len(cand1) < 2:
                 continue
-            for cand2 in candidates[i+1:]:
+            for cand2 in valid_candidates[i+1:]:
                 if cand1 != cand2:
                     # 完全包含（短い方が長い方に含まれる）
                     if cand1 in cand2 and len(cand2) > len(cand1) + 1:
@@ -522,20 +562,20 @@ class AdvancedStatisticalExtractor:
         tokens = self._safe_tokenize(full_text, self.sudachi_mode_a)
         words = [token.surface() for token in tokens]
 
-        # 候補用語の頻度カウント
+        # 候補用語の頻度カウント（valid_candidatesのみ）
         word_freq = defaultdict(int)
         for word in words:
-            if word in candidates:
+            if word in valid_candidates:
                 word_freq[word] += 1
 
-        # 共起カウント（完全一致のみ）
+        # 共起カウント（完全一致のみ、valid_candidatesのみ）
         for i, word in enumerate(words):
-            if word in candidates:
+            if word in valid_candidates:
                 window_start = max(0, i - window_size)
                 window_end = min(len(words), i + window_size + 1)
 
                 for j in range(window_start, window_end):
-                    if i != j and words[j] in candidates:
+                    if i != j and words[j] in valid_candidates:
                         cooccurrence_map[word][words[j]] += 1
 
         # PMI（相互情報量）で共起の強さを評価
@@ -557,7 +597,15 @@ class AdvancedStatisticalExtractor:
                         if pmi >= pmi_threshold:
                             related[cand1].add(cand2)
 
-        return {k: list(v) for k, v in related.items() if v}
+        # 関連語のフィルタリング（不完全な用語を除外）
+        filtered_related = {}
+        for term, related_list in related.items():
+            # 各関連語が有効な用語かチェック
+            valid_related = [r for r in related_list if self._is_valid_term(r)]
+            if valid_related:
+                filtered_related[term] = valid_related
+
+        return filtered_related
 
     def _extract_noun_phrases(self, text: str) -> List[str]:
         """名詞句を抽出（共起検出用）"""
