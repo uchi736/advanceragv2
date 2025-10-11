@@ -38,13 +38,15 @@ class IngestionHandler:
         return all_docs
 
     def _load_single_document(self, path: str) -> List[Document]:
-        """Load a single document and return a list of Document objects."""
+        """Load a single PDF document using Azure Document Intelligence."""
         docs = []
         p = Path(path)
-        suf = p.suffix.lower()
+
+        if p.suffix.lower() != '.pdf':
+            print(f"Skipping non-PDF file: {path}")
+            return docs
 
         try:
-            # Use Azure Document Intelligence processor for all file types
             docs = self.pdf_processor.process(path)
         except Exception as e:
             print(f"Error loading {path}: {type(e).__name__} - {e}")
