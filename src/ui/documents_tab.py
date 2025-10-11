@@ -11,14 +11,8 @@ def render_documents_tab(rag_system):
 
     st.markdown("### 📤 ドキュメントアップロード")
     
-    # PDF処理方式の現在の設定を表示
-    pdf_processor_display = {
-        "legacy": "レガシー (既存のDocumentParser)",
-        "pymupdf": "PyMuPDF (高速・軽量)",
-        "azure_di": "Azure Document Intelligence (高精度・Markdown出力)"
-    }
-    current_processor = getattr(rag_system.config, 'pdf_processor_type', 'legacy')
-    st.info(f"📑 現在のPDF処理方式: **{pdf_processor_display.get(current_processor, current_processor)}**")
+    # PDF処理方式の表示
+    st.info(f"📑 PDF処理方式: **Azure Document Intelligence**")
     
     uploaded_docs = st.file_uploader(
         "ファイルを選択またはドラッグ&ドロップ (.pdf, .txt, .md, .docx, .doc)",

@@ -62,6 +62,13 @@ class Config:
         self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
         self.max_tokens = int(os.getenv("MAX_TOKENS", "4096"))
 
+        # Azure Document Intelligence settings
+        self.azure_di_endpoint = os.getenv("AZURE_DI_ENDPOINT")
+        self.azure_di_api_key = os.getenv("AZURE_DI_API_KEY")
+        self.azure_di_model = os.getenv("AZURE_DI_MODEL", "prebuilt-layout")
+        self.save_markdown = os.getenv("SAVE_MARKDOWN", "false").lower() == "true"
+        self.markdown_output_dir = os.getenv("MARKDOWN_OUTPUT_DIR", "output/markdown")
+
     # RAG and Search settings
     chunk_size: int = 1000
     chunk_overlap: int = 200

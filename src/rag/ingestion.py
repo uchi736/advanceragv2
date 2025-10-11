@@ -55,7 +55,7 @@ class IngestionHandler:
         try:
             if suf == ".pdf":
                 if self.pdf_processor:
-                    # Use modern processor (PyMuPDF or Azure DI)
+                    # Use Azure Document Intelligence processor
                     docs = self.pdf_processor.process(path)
                 else:
                     # Use legacy processor

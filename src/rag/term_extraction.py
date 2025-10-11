@@ -51,11 +51,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-try:
-    import fitz  # PyMuPDF
-except ImportError:  # pragma: no cover - optional dependency
-    fitz = None
-
 from src.rag.pdf_processors import AzureDocumentIntelligenceProcessor
 
 
@@ -263,22 +258,12 @@ class TermExtractor:
                 logger.warning(f"SemReRank initialization failed: {e}. Continuing without SemReRank.")
                 self.semrerank = None
 
-        self.pdf_processor_type = getattr(config, "pdf_processor_type", "pymupdf")
-        self.pdf_processor = None
-
-        if self.pdf_processor_type == "azure_di":
-            try:
-                self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
-            except Exception as exc:
-                logger.warning(
-                    "Azure Document Intelligence processor initialization failed (%s). Falling back to PyMuPDF.",
-                    exc
-                )
-                self.pdf_processor = None
-
-        # If Azure DI processor is not available, we'll use direct PyMuPDF fallback
-        if self.pdf_processor is None:
-            logger.warning("Azure DI processor not available. Using direct PyMuPDF fallback.")
+        # Initialize Azure Document Intelligence processor
+        try:
+            self.pdf_processor = AzureDocumentIntelligenceProcessor(config)
+        except Exception as exc:
+            logger.error(f"Azure Document Intelligence processor initialization failed: {exc}")
+            self.pdf_processor = None
 
     def _init_prompts(self):
         """プロンプトテンプレートの初期化"""
@@ -351,35 +336,13 @@ class TermExtractor:
                     if text and text.strip():
                         docs.append(Document(page_content=text, metadata=metadata or {}))
             except Exception as exc:
-                logger.error(f"PDF processor failed for {file_path}: {exc}")
-
-        if not docs and fitz is not None:
-            try:
-                document = fitz.open(str(file_path))
-                for page in document:
-                    text = page.get_text("text")
-                    if text and text.strip():
-                        docs.append(Document(
-                            page_content=text,
-                            metadata={
-                                "source": str(file_path),
-                                "page_number": page.number + 1,
-                                "processor": "pymupdf"
-                            }
-                        ))
-                document.close()
-            except Exception as exc:
-                logger.error(f"PyMuPDF fallback failed for {file_path}: {exc}")
-
-        if not docs and PyPDFLoader is not None:
-            try:
-                loader = PyPDFLoader(str(file_path))
-                docs = loader.load()
-            except Exception as exc:
-                logger.error(f"PyPDFLoader fallback failed for {file_path}: {exc}")
+                logger.error(f"Azure Document Intelligence failed for {file_path}: {exc}")
+                raise
+        else:
+            raise ValueError("Azure Document Intelligence processor not initialized")
 
         if not docs:
-            raise ValueError(f"Failed to load PDF: {file_path}")
+            raise ValueError(f"No text extracted from PDF: {file_path}")
 
         return docs
 

@@ -58,8 +58,7 @@ def get_rag_system():
                     embedding_model_identifier=os.getenv("EMBEDDING_MODEL_IDENTIFIER", "text-embedding-ada-002"),
                     collection_name=os.getenv("COLLECTION_NAME", "documents"),
                     final_k=int(os.getenv("FINAL_K", 5)),
-                    enable_jargon_extraction=st.session_state.use_jargon_augmentation,
-                    enable_reranking=st.session_state.use_reranking
+                    enable_jargon_extraction=st.session_state.use_jargon_augmentation
                 )
                 st.session_state.rag_system = initialize_rag_system(app_config)
                 st.toast("✅ RAGシステムがAzure OpenAIで正常に初期化されました", icon="🎉")
