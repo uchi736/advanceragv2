@@ -29,6 +29,9 @@ output/
 uploads/
 temp/
 
+# 実行結果ファイル
+data/bulk_query_results.csv
+
 # IDE設定
 .vscode/
 .idea/
