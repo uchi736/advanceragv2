@@ -365,15 +365,12 @@ def render_dictionary_tab(rag_system):
         return
 
     # Statistics
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         st.metric("登録用語数", f"{len(terms_df):,}")
     with col2:
         total_synonyms = sum(len(syn_list) if syn_list else 0 for syn_list in terms_df['aliases'])
         st.metric("類義語総数", f"{total_synonyms:,}")
-    with col3:
-        avg_confidence = terms_df['confidence_score'].mean() if 'confidence_score' in terms_df and not terms_df['confidence_score'].isnull().all() else 0.0
-        st.metric("平均信頼度", f"{avg_confidence:.2f}")
 
     st.markdown("---")
 
@@ -408,18 +405,18 @@ def render_dictionary_tab(rag_system):
         column_mapping = {
             'term': '用語', 'definition': '定義', 'domain': '分野',
             'aliases': '類義語', 'related_terms': '関連語',
-            'confidence_score': '信頼度', 'updated_at': '更新日時'
+            'updated_at': '更新日時'
         }
         # Add 'id' mapping only if it exists
         if 'id' in display_df.columns:
             column_mapping['id'] = 'ID'
         display_df.rename(columns=column_mapping, inplace=True)
-        
+
         # 削除ボタン用の列を追加
         display_df['削除'] = False
-        
+
         edited_df = st.data_editor(
-            display_df[['用語', '定義', '分野', '類義語', '関連語', '信頼度', '更新日時', '削除']],
+            display_df[['用語', '定義', '分野', '類義語', '関連語', '更新日時', '削除']],
             use_container_width=True,
             hide_index=True,
             height=min(600, (len(display_df) + 1) * 35 + 3),

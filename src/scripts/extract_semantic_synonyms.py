@@ -42,7 +42,7 @@ def load_specialized_terms(connection_string: str, jargon_table_name: str = None
 
     engine = create_engine(connection_string)
     query = text(f"""
-        SELECT term, definition
+        SELECT term, definition, related_terms
         FROM {jargon_table_name}
         WHERE definition IS NOT NULL AND definition != ''
         ORDER BY term
@@ -56,6 +56,7 @@ def load_specialized_terms(connection_string: str, jargon_table_name: str = None
                 terms.append({
                     'term': row.term,
                     'definition': row.definition,
+                    'related_terms': row.related_terms or [],
                     'text': f"{row.term}: {row.definition}"
                 })
         logger.info(f"Loaded {len(terms)} specialized terms with definitions")
@@ -91,9 +92,12 @@ def load_candidate_terms_from_extraction(file_path: str = "output/term_extractio
                 for term in candidates_data.keys()
             ]
         elif isinstance(candidates_data, list):
-            # [{term: ..., score: ...}]形式の場合
+            # [{term: ..., text: ..., score: ...}]形式の場合
             candidate_terms = [
-                {'term': item.get('term', item.get('headword', '')), 'text': item.get('term', item.get('headword', ''))}
+                {
+                    'term': item.get('term', item.get('headword', '')),
+                    'text': item.get('text', item.get('term', item.get('headword', '')))  # textフィールドを優先
+                }
                 for item in candidates_data
             ]
         else:
@@ -109,6 +113,50 @@ def load_candidate_terms_from_extraction(file_path: str = "output/term_extractio
     except Exception as e:
         logger.error(f"Error loading candidate terms: {e}")
         return []
+
+
+async def generate_definitions_for_candidates(
+    candidate_terms: List[Dict[str, Any]],
+    llm
+) -> List[Dict[str, Any]]:
+    """
+    候補用語にLLMで定義を生成（Option B: F1=83.3%）
+
+    Args:
+        candidate_terms: 候補用語リスト [{"term": "...", "text": "..."}]
+        llm: Azure ChatOpenAI インスタンス
+
+    Returns:
+        定義付き候補用語リスト [{"term": "...", "text": "用語: 定義"}]
+    """
+    from langchain_core.prompts import ChatPromptTemplate
+
+    logger.info(f"Generating definitions for {len(candidate_terms)} candidate terms...")
+    enriched = []
+
+    prompt_template = ChatPromptTemplate.from_template(
+        "以下の専門用語の定義を1-2文（40-50文字）で生成してください。"
+        "技術的文脈や関連概念を含めてください。\n\n"
+        "用語: {term}\n\n"
+        "定義のみを返してください:"
+    )
+
+    for cand in candidate_terms:
+        term = cand['term']
+
+        try:
+            response = await llm.ainvoke(prompt_template.format(term=term))
+            definition = response.content.strip()
+            text = f"{term}: {definition}"
+            logger.debug(f"Generated definition for '{term}': {definition[:50]}...")
+        except Exception as e:
+            logger.warning(f"Failed to generate definition for '{term}': {e}")
+            text = cand.get('text', term)  # フォールバック
+
+        enriched.append({"term": term, "text": text})
+
+    logger.info(f"Successfully generated {len(enriched)} definitions")
+    return enriched
 
 
 async def extract_and_save_semantic_synonyms(
@@ -135,19 +183,46 @@ async def extract_and_save_semantic_synonyms(
     logger.info(f"  - Candidate terms: {len(candidate_terms)}")
     logger.info(f"  - Total: {len(specialized_terms) + len(candidate_terms)}")
 
+    # LLMインスタンス作成（定義生成用）
+    from langchain_openai import AzureChatOpenAI
+    from rag.config import Config
+    cfg = Config()
+
+    llm = AzureChatOpenAI(
+        azure_deployment=cfg.azure_openai_chat_deployment_name,
+        api_version=cfg.azure_openai_api_version,
+        openai_api_key=cfg.azure_openai_api_key,
+        temperature=0
+    )
+
+    # 候補用語にLLMで定義を生成（Option B: F1=83.3%）
+    logger.info("\n[Step 1.5] Generating definitions for candidate terms...")
+    enriched_candidates = await generate_definitions_for_candidates(candidate_terms, llm)
+    logger.info(f"Generated definitions for {len(enriched_candidates)} candidates")
+
     analyzer = TermClusteringAnalyzer(pg_url, min_terms=3, jargon_table_name=jargon_table_name, embeddings=embeddings)
 
     try:
-        synonyms_dict = analyzer.extract_semantic_synonyms_hybrid(
+        result = await analyzer.extract_semantic_synonyms_hybrid(
             specialized_terms=specialized_terms,
-            candidate_terms=candidate_terms,
-            similarity_threshold=0.85,
-            max_synonyms=5
+            candidate_terms=enriched_candidates,  # LLM定義付き候補用語を使用
+            similarity_threshold=0.50,  # 最適化結果: F1=83.3%, Recall=93.8%
+            max_synonyms=10,  # 閾値を下げたので増やす
+            use_llm_naming=True,  # LLMによるクラスタ命名を有効化
+            use_llm_for_candidates=True  # 候補用語に対してLLM類義語判定を有効化
         )
 
-        # DBに保存
-        analyzer.update_semantic_synonyms_to_db(synonyms_dict)
+        # 結果から類義語辞書、クラスタマッピング、クラスタ名を取得
+        synonyms_dict = result.get('synonyms', {})
+        cluster_mapping = result.get('clusters', {})
+        cluster_names = result.get('cluster_names', {})
+
+        # DBに保存（クラスタ名も含む）
+        analyzer.update_semantic_synonyms_to_db(synonyms_dict, cluster_mapping, cluster_names)
         logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
+        logger.info(f"Updated domain field with cluster info for {len(cluster_mapping)} terms")
+        if cluster_names:
+            logger.info(f"Applied LLM-generated cluster names: {cluster_names}")
 
         return synonyms_dict
 
@@ -187,16 +262,22 @@ async def main():
     analyzer = TermClusteringAnalyzer(PG_URL, min_terms=3)
 
     try:
-        synonyms_dict = analyzer.extract_semantic_synonyms_hybrid(
+        result = await analyzer.extract_semantic_synonyms_hybrid(
             specialized_terms=specialized_terms,
             candidate_terms=candidate_terms,
-            similarity_threshold=0.85,
-            max_synonyms=5
+            similarity_threshold=0.50,  # 最適化結果: F1=83.3%, Recall=93.8%
+            max_synonyms=10,  # 閾値を下げたので増やす
+            use_llm_naming=True  # LLMによるクラスタ命名を有効化
         )
+
+        # 結果から類義語辞書、クラスタマッピング、クラスタ名を取得
+        synonyms_dict = result.get('synonyms', {})
+        cluster_mapping = result.get('clusters', {})
+        cluster_names = result.get('cluster_names', {})
 
         # 4. DBに保存
         logger.info(f"\n[Step 4] Updating database...")
-        updated_count = analyzer.update_semantic_synonyms_to_db(synonyms_dict)
+        updated_count = analyzer.update_semantic_synonyms_to_db(synonyms_dict, cluster_mapping, cluster_names)
 
         # 5. 結果サマリー
         logger.info("\n" + "="*50)

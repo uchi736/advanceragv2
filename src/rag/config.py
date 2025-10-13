@@ -4,26 +4,29 @@ from typing import Optional
 
 @dataclass
 class Config:
-    # Placeholder values - will be populated in __post_init__
-    db_host: str = "localhost"
-    db_port: str = "5432"
-    db_name: str = "postgres"
-    db_user: str = "postgres"
-    db_password: str = "your-password"
+    # Database settings (populated in __post_init__)
+    db_host: str = ""
+    db_port: str = ""
+    db_name: str = ""
+    db_user: str = ""
+    db_password: str = ""
     pgvector_connection_string: str = ""
 
+    # OpenAI settings (populated in __post_init__)
     openai_api_key: Optional[str] = None
-    embedding_model_identifier: str = "text-embedding-3-small"
-    llm_model_identifier: str = "gpt-4.1-mini"
+    embedding_model_identifier: str = ""
+    llm_model_identifier: str = ""
 
+    # Azure OpenAI settings (populated in __post_init__)
     azure_openai_api_key: Optional[str] = None
     azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_version: str = "2024-02-01"
+    azure_openai_api_version: str = ""
     azure_openai_chat_deployment_name: Optional[str] = None
     azure_openai_embedding_deployment_name: Optional[str] = None
 
+    # LLM settings (populated in __post_init__)
     llm_temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 0
 
     def __post_init__(self):
         """Load environment variables dynamically after load_dotenv() has been called"""
@@ -69,17 +72,25 @@ class Config:
         self.save_markdown = os.getenv("SAVE_MARKDOWN", "false").lower() == "true"
         self.markdown_output_dir = os.getenv("MARKDOWN_OUTPUT_DIR", "output/markdown")
 
+    # Azure Document Intelligence settings (populated in __post_init__)
+    azure_di_endpoint: Optional[str] = None
+    azure_di_api_key: Optional[str] = None
+    azure_di_model: str = ""
+    save_markdown: bool = False
+    markdown_output_dir: str = ""
+
     # RAG and Search settings
     chunk_size: int = 1000
     chunk_overlap: int = 200
-    vector_search_k: int = 15
-    keyword_search_k: int = 15
-    final_k: int = 15
+    vector_search_k: int = 3
+    keyword_search_k: int = 3
+    final_k: int = 5
     collection_name: str = "documents"
     fts_language: str = "english"
     rrf_k_for_fusion: int = 60
     distance_strategy: str = "COSINE"
     vector_store_type: str = "pgvector"
+    default_search_type: str = "hybrid"  # "vector", "keyword", or "hybrid"
 
     # Japanese search settings
     enable_japanese_search: bool = True
@@ -96,13 +107,6 @@ class Config:
     enable_metadata_enrichment: bool = True
     confidence_threshold: float = 0.2
 
-    # Azure Document Intelligence settings
-    azure_di_endpoint: Optional[str] = None
-    azure_di_api_key: Optional[str] = None
-    azure_di_model: str = "prebuilt-layout"
-    save_markdown: bool = False
-    markdown_output_dir: str = "output/markdown"
-
     # Term extraction settings (SemReRank)
     use_advanced_extraction: bool = True
     semrerank_enabled: bool = True
@@ -113,3 +117,8 @@ class Config:
     definition_generation_percentile: float = 50.0
     enable_lightweight_filter: bool = True
     llm_filter_batch_size: int = 10
+
+    # Term extraction quality settings
+    use_sentence_boundary_for_ngrams: bool = True
+    max_related_terms_per_candidate: int = 5
+    min_related_term_length: int = 4

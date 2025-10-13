@@ -214,11 +214,11 @@ class TermExtractor:
             self.tokenizer_obj = None
             self.sudachi_mode_a = None
 
-        self.text_splitter = RecursiveCharacterTextSplitter(
+        # MarkdownTextSplitterを使用してMarkdown構造を保持
+        from langchain.text_splitter import MarkdownTextSplitter
+        self.text_splitter = MarkdownTextSplitter(
             chunk_size=2000,
-            chunk_overlap=200,
-            length_function=len,
-            separators=["。", "！", "？", "\n\n", "\n", " ", ""]
+            chunk_overlap=200
         )
         self.json_parser = JsonOutputParser(pydantic_object=TermList)
         self._init_prompts()
@@ -264,8 +264,14 @@ class TermExtractor:
             format_instructions=self.json_parser.get_format_instructions()
         )
 
-    async def extract_from_documents(self, file_paths: List[Path]) -> List[Dict]:
-        """複数の文書から専門用語を抽出（ドキュメントごとに候補抽出）"""
+    async def extract_from_documents(self, file_paths: List[Path]) -> Dict[str, Any]:
+        """複数の文書から専門用語を抽出（ドキュメントごとに候補抽出）
+
+        Returns:
+            Dict with keys:
+                - "terms": List[Dict] - 専門用語リスト
+                - "candidates": List[Dict] - 候補用語リスト（HDBSCAN用）
+        """
         all_chunks = []
         per_document_texts = []  # ドキュメントごとのテキスト
 
@@ -288,30 +294,41 @@ class TermExtractor:
 
         if not all_chunks:
             logger.error("No text chunks generated")
-            return []
+            return {"terms": [], "candidates": []}
 
         # 高度な統計的抽出を使用
         if self.use_advanced_extraction and per_document_texts:
             logger.info("Using advanced statistical extraction (per-document candidate extraction)")
-            terms = await self._extract_with_advanced_method_per_document(per_document_texts, all_chunks)
+            result = await self._extract_with_advanced_method_per_document(per_document_texts, all_chunks)
+            # 新しい辞書形式で返される
+            return result
         else:
-            # 従来の方法で抽出
+            # 従来の方法で抽出（候補なし）
             logger.info("Using traditional extraction")
             all_terms = []
             for chunk in all_chunks:
                 terms = await self._extract_from_chunk(chunk)
                 all_terms.extend(terms)
             terms = self._merge_duplicate_terms(all_terms)
-
-        return terms
+            return {"terms": terms, "candidates": []}
 
     def _get_loader(self, file_path: Path):
-        """ファイルタイプに応じたローダーを返す - Azure DI一択"""
-        docs = self._load_pdf_documents(file_path)
+        """ファイルタイプに応じたローダーを返す"""
+        suffix = file_path.suffix.lower()
+
+        # PDFはAzure Document Intelligenceで処理
+        if suffix == '.pdf':
+            docs = self._load_pdf_documents(file_path)
+        # .txt/.mdはシンプルなテキストローダー
+        elif suffix in ['.txt', '.md']:
+            docs = self._load_text_documents(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: {suffix}")
+
         return _InMemoryLoader(docs)
 
     def _load_pdf_documents(self, file_path: Path) -> List[Document]:
-        """Azure Document Intelligenceでドキュメントを読み込む"""
+        """Azure Document IntelligenceでPDFを読み込む"""
         docs: List[Document] = []
 
         if self.pdf_processor is not None:
@@ -330,6 +347,29 @@ class TermExtractor:
             raise ValueError(f"No text extracted from PDF: {file_path}")
 
         return docs
+
+    def _load_text_documents(self, file_path: Path) -> List[Document]:
+        """テキストファイル(.txt/.md)を読み込む"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+
+            if not text.strip():
+                raise ValueError(f"Empty text file: {file_path}")
+
+            # メタデータを設定
+            metadata = {
+                "source": str(file_path),
+                "file_type": file_path.suffix.lower()
+            }
+
+            docs = [Document(page_content=text, metadata=metadata)]
+            logger.info(f"Loaded text file: {file_path} ({len(text)} characters)")
+
+            return docs
+        except Exception as exc:
+            logger.error(f"Failed to load text file {file_path}: {exc}")
+            raise
 
     async def _extract_from_chunk(self, chunk_text: str) -> List[Dict]:
         """単一チャンクから専門用語を抽出"""
@@ -512,7 +552,9 @@ class TermExtractor:
         logger.info("Detecting related terms (inclusion & co-occurrence)")
         related_map = self.statistical_extractor.detect_related_terms(
             candidates=list(candidates_for_semrerank.keys()),
-            full_text=full_text
+            full_text=full_text,
+            max_related=self.config.max_related_terms_per_candidate,
+            min_term_length=self.config.min_related_term_length
         )
         logger.info(f"Detected related terms for {len(related_map)} terms")
 
@@ -654,7 +696,7 @@ class TermExtractor:
             logger.warning("LLM filter skipped (llm not available)")
 
         # 10. 辞書形式に変換して返す
-        return [
+        terms_list = [
             {
                 "headword": term.term,
                 "score": term.score,
@@ -668,6 +710,52 @@ class TermExtractor:
             }
             for term in terms
         ]
+
+        # 候補用語もリスト化（HDBSCAN類義語抽出用）
+        # 周辺テキストを抽出して text フィールドに追加
+        candidates_list = []
+        for term, freq in candidates_for_semrerank.items():
+            # 用語の周辺テキストを抽出（最初の出現箇所から前後100文字）
+            context = self._extract_context(term, full_text, window=100)
+            candidates_list.append({
+                "term": term,
+                "frequency": freq,
+                "tfidf_score": tfidf_scores.get(term, 0.0),
+                "cvalue_score": cvalue_scores.get(term, 0.0),
+                "text": context  # 周辺テキストを追加
+            })
+
+        # 辞書形式で返す（後方互換性のため、termsキーで取得可能に）
+        return {
+            "terms": terms_list,
+            "candidates": candidates_list
+        }
+
+    def _extract_context(self, term: str, text: str, window: int = 100) -> str:
+        """
+        用語の周辺テキストを抽出
+
+        Args:
+            term: 抽出する用語
+            text: 全体テキスト
+            window: 前後の文字数
+
+        Returns:
+            "用語: 周辺テキスト" 形式の文字列
+        """
+        # 用語の最初の出現位置を探す
+        idx = text.find(term)
+        if idx == -1:
+            # 見つからない場合は用語のみ返す
+            return term
+
+        # 前後window文字を抽出
+        start = max(0, idx - window)
+        end = min(len(text), idx + len(term) + window)
+        context = text[start:end].strip()
+
+        # "用語: 周辺テキスト" 形式で返す
+        return f"{term}: {context}"
 
     def _is_abbreviation(self, term: str) -> bool:
         """
@@ -868,8 +956,12 @@ class TermExtractor:
 
 
 # ========== Utility Functions ==========
-async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, llm, embeddings, vector_store, pg_url, jargon_table_name):
+async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, llm, embeddings, vector_store, pg_url, jargon_table_name, jargon_manager=None):
     """専門用語抽出パイプラインの実行"""
+    # jargon_manager は将来の拡張用（現在は未使用）
+    if jargon_manager is not None:
+        logger.info("Using provided jargon_manager")
+
     extractor = TermExtractor(config, llm, embeddings, vector_store, pg_url, jargon_table_name)
 
     # ファイルの検索
@@ -882,15 +974,24 @@ async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, ll
 
     logger.info(f"Found {len(files)} files to process")
 
-    # 用語抽出
-    terms = await extractor.extract_from_documents(files)
+    # 用語抽出（新しい辞書形式で返される）
+    result = await extractor.extract_from_documents(files)
+    terms = result.get("terms", [])
+    candidates = result.get("candidates", [])
 
-    # JSONファイルに保存
+    # JSONファイルに保存（専門用語のみ）
     output_json.parent.mkdir(parents=True, exist_ok=True)
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump({"terms": terms}, f, ensure_ascii=False, indent=2)
 
     logger.info(f"Saved {len(terms)} terms to {output_json}")
+
+    # デバッグファイルに候補用語を保存（HDBSCAN用）
+    if candidates:
+        debug_file = output_json.parent / "term_extraction_debug.json"
+        with open(debug_file, "w", encoding="utf-8") as f:
+            json.dump({"candidates": candidates}, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved {len(candidates)} candidate terms to {debug_file}")
 
     # PostgreSQLに保存
     if terms:

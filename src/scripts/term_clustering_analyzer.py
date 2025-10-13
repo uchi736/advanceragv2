@@ -80,11 +80,11 @@ class TermClusteringAnalyzer:
         """データベースから専門用語を読み込み"""
         engine = create_engine(self.connection_string)
         query = text(f"""
-            SELECT term, definition, domain, aliases
+            SELECT term, definition, domain, aliases, related_terms
             FROM {self.jargon_table_name}
             ORDER BY term
         """)
-        
+
         terms = []
         try:
             with engine.connect() as conn:
@@ -95,6 +95,7 @@ class TermClusteringAnalyzer:
                         'definition': row.definition,
                         'domain': row.domain,
                         'aliases': row.aliases or [],
+                        'related_terms': row.related_terms or [],
                         'text_for_embedding': f"{row.term}: {row.definition}"
                     })
             logger.info(f"Loaded {len(terms)} terms from database")
@@ -227,13 +228,151 @@ class TermClusteringAnalyzer:
         
         return cluster_names
 
-    def extract_semantic_synonyms_hybrid(
+    async def llm_judge_candidate_synonym(
+        self,
+        spec_term: str,
+        spec_def: str,
+        candidate_term: str
+    ) -> bool:
+        """
+        LLMで候補用語が類義語かどうかを判定（定義なし候補用語向け）
+
+        Args:
+            spec_term: 専門用語
+            spec_def: 専門用語の定義
+            candidate_term: 候補用語
+
+        Returns:
+            True: 類義語, False: 非類義語（包含関係・関連語）
+        """
+        from langchain_core.prompts import ChatPromptTemplate
+        import json
+
+        prompt_template = ChatPromptTemplate.from_template(
+            "以下の2つの用語が類義語（ほぼ同じ意味を持つ）かどうかを判定してください。\n\n"
+            "専門用語: {spec_term}\n"
+            "定義: {spec_def}\n\n"
+            "候補用語: {candidate_term}\n\n"
+            "判定基準:\n"
+            "- 類義語: ほぼ同じ意味、言い換え、異なる表記\n"
+            "- 非類義語: 包含関係（一方が他方の一部）、上位概念/下位概念、関連語（共起するが意味は異なる）\n\n"
+            "例:\n"
+            "- 類義語: 「コンピュータ」と「コンピューター」\n"
+            "- 非類義語: 「ILIPS」と「ILIPS環境価値管理プラットフォーム」（包含関係）\n"
+            "- 非類義語: 「エンジン」と「ディーゼルエンジン」（上位/下位概念）\n\n"
+            "回答をJSONで返してください:\n"
+            '{{"is_synonym": true/false, "reason": "理由"}}'
+        )
+
+        try:
+            response = await llm.ainvoke(
+                prompt_template.format(
+                    spec_term=spec_term,
+                    spec_def=spec_def,
+                    candidate_term=candidate_term
+                )
+            )
+
+            # JSON解析
+            content = response.content.strip()
+            # コードブロックを除去
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            result = json.loads(content)
+            is_synonym = result.get("is_synonym", True)
+            reason = result.get("reason", "")
+
+            logger.debug(f"LLM判定: '{spec_term}' ↔ '{candidate_term}': {is_synonym} ({reason})")
+            return is_synonym
+
+        except Exception as e:
+            logger.warning(f"LLM判定失敗 '{spec_term}' ↔ '{candidate_term}': {e}")
+            # エラー時は保守的に類義語と判定（偽陰性を避ける）
+            return True
+
+    async def llm_judge_synonym_with_definitions(
+        self,
+        term1: str,
+        def1: str,
+        term2: str,
+        def2: str
+    ) -> bool:
+        """
+        LLMで2つの用語が類義語かどうかを判定（両方の定義あり）
+
+        Args:
+            term1: 用語1
+            def1: 用語1の定義
+            term2: 用語2
+            def2: 用語2の定義
+
+        Returns:
+            True: 類義語, False: 非類義語（包含関係・関連語）
+        """
+        from langchain_core.prompts import ChatPromptTemplate
+        import json
+
+        prompt_template = ChatPromptTemplate.from_template(
+            "以下の2つの用語が類義語（ほぼ同じ意味を持つ）かどうかを判定してください。\n\n"
+            "用語1: {term1}\n"
+            "定義1: {def1}\n\n"
+            "用語2: {term2}\n"
+            "定義2: {def2}\n\n"
+            "判定基準:\n"
+            "- 類義語: ほぼ同じ意味、言い換え、異なる表記、同じ対象を指す\n"
+            "- 非類義語: 包含関係（一方が他方の一部）、上位概念/下位概念、関連語（共起するが意味は異なる）、異なる種類の技術/手法\n\n"
+            "例:\n"
+            "- 類義語: 「コンピュータ」と「コンピューター」（表記ゆれ）\n"
+            "- 類義語: 「ガス軸受」と「気体軸受」（言い換え）\n"
+            "- 非類義語: 「ILIPS」と「ILIPS環境価値管理プラットフォーム」（包含関係）\n"
+            "- 非類義語: 「ガス軸受」と「磁気軸受」（異なる種類の軸受）\n"
+            "- 非類義語: 「拡散接合プロセス」と「真空ホットプレス」（プロセス全体 vs 装置/手段）\n\n"
+            "回答をJSONで返してください:\n"
+            '{{"is_synonym": true/false, "reason": "理由"}}'
+        )
+
+        try:
+            response = await llm.ainvoke(
+                prompt_template.format(
+                    term1=term1,
+                    def1=def1 or "（定義なし）",
+                    term2=term2,
+                    def2=def2 or "（定義なし）"
+                )
+            )
+
+            # JSON解析
+            content = response.content.strip()
+            # コードブロックを除去
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            result = json.loads(content)
+            is_synonym = result.get("is_synonym", True)
+            reason = result.get("reason", "")
+
+            logger.debug(f"LLM判定: '{term1}' ↔ '{term2}': {is_synonym} ({reason})")
+            return is_synonym
+
+        except Exception as e:
+            logger.warning(f"LLM判定失敗 '{term1}' ↔ '{term2}': {e}")
+            # エラー時は保守的に類義語と判定（偽陰性を避ける）
+            return True
+
+    async def extract_semantic_synonyms_hybrid(
         self,
         specialized_terms: List[Dict[str, Any]],
         candidate_terms: List[Dict[str, Any]],
         similarity_threshold: float = 0.85,
-        max_synonyms: int = 5
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        max_synonyms: int = 5,
+        use_llm_naming: bool = True,
+        use_llm_for_candidates: bool = True
+    ) -> Dict[str, Any]:
         """
         2段階エンベディングによる意味ベース類義語抽出
 
@@ -242,25 +381,34 @@ class TermClusteringAnalyzer:
             candidate_terms: 候補用語リスト [{"term": "過給機", "text": "過給機"}]
             similarity_threshold: コサイン類似度の閾値
             max_synonyms: 各用語の最大類義語数
+            use_llm_naming: LLMによるクラスタ命名を使用するかどうか
 
         Returns:
             {
-                "ETC": [
-                    {"term": "電動ターボチャージャ", "similarity": 0.92, "is_specialized": True},
-                    {"term": "過給機", "similarity": 0.87, "is_specialized": False}
-                ]
+                "synonyms": {
+                    "ETC": [
+                        {"term": "電動ターボチャージャ", "similarity": 0.92, "is_specialized": True},
+                        {"term": "過給機", "similarity": 0.87, "is_specialized": False}
+                    ]
+                },
+                "clusters": {"ETC": 0, "過給機": 0},
+                "cluster_names": {0: "軸受技術", 1: "電動化システム"}
             }
         """
         logger.info(f"Starting hybrid semantic synonym extraction: {len(specialized_terms)} specialized, {len(candidate_terms)} candidates")
 
-        # 1. エンベディング生成（2段階）
+        # terms_dataに専門用語を保存（LLM命名用）
+        self.terms_data = specialized_terms
+
+        # 1. エンベディング生成（統一形式: term + context/definition）
         logger.info("Generating embeddings for specialized terms (term + definition)...")
         spec_texts = [t['text'] for t in specialized_terms]
         spec_embeddings_list = self.embeddings.embed_documents(spec_texts)
         spec_embeddings = np.array(spec_embeddings_list)
 
-        logger.info("Generating embeddings for candidate terms (term only)...")
-        cand_texts = [t['text'] for t in candidate_terms]
+        # 候補用語: 'text'フィールドを使用（周辺テキスト or 用語のみ）
+        logger.info("Generating embeddings for candidate terms (term + context)...")
+        cand_texts = [t.get('text', t['term']) for t in candidate_terms]
         cand_embeddings_list = self.embeddings.embed_documents(cand_texts)
         cand_embeddings = np.array(cand_embeddings_list)
 
@@ -274,9 +422,16 @@ class TermClusteringAnalyzer:
 
         # 4. UMAP次元圧縮
         logger.info("Applying UMAP dimensional reduction...")
+        # n_componentsはデータ数より小さくする必要がある
+        n_samples = len(all_embeddings)
+        n_components = min(20, max(2, n_samples // 2))  # データ数の半分以下、最低2
+        n_neighbors = min(15, max(2, n_samples // 3))   # データ数の1/3以下、最低2
+
+        logger.info(f"UMAP params: n_samples={n_samples}, n_components={n_components}, n_neighbors={n_neighbors}")
+
         umap_reducer = umap.UMAP(
-            n_components=20,
-            n_neighbors=15,
+            n_components=n_components,
+            n_neighbors=n_neighbors,
             min_dist=0.1,
             metric='cosine',
             random_state=42
@@ -286,10 +441,13 @@ class TermClusteringAnalyzer:
 
         # 5. HDBSCANクラスタリング
         logger.info("Performing HDBSCAN clustering...")
+        # min_cluster_sizeを動的に調整: データ数の20%以上、最低2
+        min_cluster_size = max(2, int(n_samples * 0.2))
+        logger.info(f"HDBSCAN min_cluster_size: {min_cluster_size}")
         clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=2,
+            min_cluster_size=min_cluster_size,
             min_samples=1,
-            cluster_selection_epsilon=0.3,
+            cluster_selection_epsilon=0.5,
             cluster_selection_method='leaf',
             metric='euclidean',
             allow_single_cluster=True,
@@ -301,8 +459,9 @@ class TermClusteringAnalyzer:
         n_noise = sum(1 for c in clusters if c == -1)
         logger.info(f"Clustering complete: {n_clusters} clusters, {n_noise} noise points")
 
-        # 6. 専門用語ごとに類義語抽出
+        # 6. 専門用語ごとに類義語抽出とクラスタマッピング
         synonyms_dict = {}
+        cluster_mapping = {}  # term -> cluster_id のマッピング
         spec_count = len(specialized_terms)
 
         for idx in range(spec_count):
@@ -310,9 +469,12 @@ class TermClusteringAnalyzer:
             term_name = spec_term['term']
             cluster_id = clusters[idx]
 
-            # ノイズクラスタはスキップ
+            # クラスタIDを記録（ノイズクラスタも含む）
+            cluster_mapping[term_name] = int(cluster_id)
+
+            # ノイズクラスタはスキップ（類義語抽出のみ）
             if cluster_id == -1:
-                logger.debug(f"Term '{term_name}' is in noise cluster, skipping")
+                logger.debug(f"Term '{term_name}' is in noise cluster, skipping synonym extraction")
                 continue
 
             # 同一クラスタ内の他の用語を検索
@@ -335,13 +497,87 @@ class TermClusteringAnalyzer:
 
                 if similarity >= similarity_threshold:
                     other_term = all_terms[other_idx]
+                    other_term_name = other_term['term']
                     is_specialized = other_idx < spec_count
 
+                    # 自分自身は除外
+                    if other_term_name == term_name:
+                        continue
+
+                    # 包含関係（related_terms）に含まれる用語は類義語から除外
+                    related_terms = spec_term.get('related_terms', [])
+                    if other_term_name in related_terms:
+                        logger.debug(f"Skipping '{other_term_name}' for '{term_name}': in related_terms (inclusion relationship)")
+                        continue
+
                     similarities.append({
-                        'term': other_term['term'],
+                        'term': other_term_name,
                         'similarity': similarity,
                         'is_specialized': is_specialized
                     })
+
+            # 全ての類義語候補に対してLLM判定を実行（オプション）
+            if use_llm_for_candidates and similarities:
+                logger.debug(f"Applying LLM judgment for {len(similarities)} synonym candidates of '{term_name}'")
+                spec_def = spec_term.get('definition', '')
+
+                # タスクリストとメタデータを準備（並列実行用）
+                tasks = []
+                task_metadata = []
+
+                for sim_item in similarities:
+                    candidate_term = sim_item['term']
+                    is_specialized = sim_item['is_specialized']
+
+                    # 専門用語同士の場合、候補用語の定義も取得
+                    if is_specialized:
+                        # specialized_termsから定義を検索
+                        candidate_def = next(
+                            (t.get('definition', '') for t in specialized_terms if t['term'] == candidate_term),
+                            ''
+                        )
+                    else:
+                        # 候補用語の場合、定義はLLM生成済み（textフィールドから抽出）
+                        candidate_obj = next(
+                            (t for t in all_terms[spec_count:] if t['term'] == candidate_term),
+                            None
+                        )
+                        if candidate_obj:
+                            # "term: definition"形式から定義を抽出
+                            text = candidate_obj.get('text', '')
+                            candidate_def = text.split(':', 1)[1].strip() if ':' in text else ''
+                        else:
+                            candidate_def = ''
+
+                    # LLM判定タスクを作成（並列実行）
+                    task = self.llm_judge_synonym_with_definitions(
+                        term_name,
+                        spec_def,
+                        candidate_term,
+                        candidate_def
+                    )
+                    tasks.append(task)
+                    task_metadata.append(sim_item)
+
+                # asyncio.gatherで並列実行（例外処理付き）
+                import asyncio
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # 結果をフィルタリング
+                llm_filtered_similarities = []
+                for sim_item, result in zip(task_metadata, results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"LLM judgment failed for '{sim_item['term']}': {result}")
+                        continue
+
+                    is_synonym = result
+                    if is_synonym:
+                        llm_filtered_similarities.append(sim_item)
+                    else:
+                        logger.debug(f"LLM rejected '{sim_item['term']}' as synonym of '{term_name}'")
+
+                similarities = llm_filtered_similarities
+                logger.debug(f"After LLM filtering: {len(similarities)} synonyms remain")
 
             # 類似度順にソート
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
@@ -352,37 +588,166 @@ class TermClusteringAnalyzer:
                 logger.debug(f"Found {len(similarities[:max_synonyms])} synonyms for '{term_name}'")
 
         logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
-        return synonyms_dict
+        logger.info(f"Mapped {len(cluster_mapping)} terms to clusters")
 
-    def update_semantic_synonyms_to_db(self, synonyms_dict: Dict[str, List[Dict[str, Any]]]):
+        # LLMによるクラスタ命名（オプション）
+        cluster_names = {}
+        if use_llm_naming:
+            try:
+                # クラスタIDごとに用語をグループ化
+                cluster_terms_map = {}
+                for idx, cluster_id in enumerate(clusters[:spec_count]):
+                    if cluster_id >= 0:  # ノイズクラスタを除外
+                        if cluster_id not in cluster_terms_map:
+                            cluster_terms_map[cluster_id] = []
+                        cluster_terms_map[cluster_id].append(specialized_terms[idx]['term'])
+
+                logger.info(f"Naming {len(cluster_terms_map)} clusters with LLM...")
+                cluster_names = await self.name_clusters_with_llm(cluster_terms_map)
+                logger.info(f"LLM naming complete: {cluster_names}")
+            except Exception as e:
+                logger.error(f"LLM cluster naming failed: {e}. Using default names.", exc_info=True)
+                # フォールバック: クラスタN
+                unique_clusters = set(c for c in cluster_mapping.values() if c >= 0)
+                cluster_names = {cid: f"クラスタ{cid}" for cid in unique_clusters}
+
+        # クラスタ情報とクラスタ名を含む結果を返す
+        return {
+            'synonyms': synonyms_dict,
+            'clusters': cluster_mapping,
+            'cluster_names': cluster_names
+        }
+
+    def _ensure_bidirectional_synonyms(
+        self,
+        synonyms_dict: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        抽出した意味的類義語をDBに保存
+        類義語関係の双方向性を保証する
+
+        A→Bの類義語関係がある場合、B→Aも追加する
+        例: "ETC" → ["電動ターボチャージャ"] の場合、
+            "電動ターボチャージャ" → ["ETC"] も追加
 
         Args:
-            synonyms_dict: extract_semantic_synonyms_hybrid()の出力
+            synonyms_dict: 元の類義語辞書 {term: [{"term": ..., "similarity": ...}]}
+
+        Returns:
+            双方向性を保証した類義語辞書
         """
+        from collections import defaultdict
+
+        # 全ての類義語関係を収集
+        synonym_pairs = defaultdict(dict)  # {term1: {term2: similarity, ...}}
+
+        for term1, synonyms in synonyms_dict.items():
+            for syn_info in synonyms:
+                term2 = syn_info['term']
+                similarity = syn_info.get('similarity', 0.85)
+                is_specialized = syn_info.get('is_specialized', False)
+
+                # 双方向に登録
+                synonym_pairs[term1][term2] = {
+                    'similarity': similarity,
+                    'is_specialized': is_specialized
+                }
+                # 逆方向も登録（存在しない場合のみ）
+                if term2 not in synonym_pairs or term1 not in synonym_pairs[term2]:
+                    synonym_pairs[term2][term1] = {
+                        'similarity': similarity,
+                        'is_specialized': is_specialized
+                    }
+
+        # Dict[str, List[Dict]]形式に変換
+        bidirectional_dict = {}
+        for term, syn_map in synonym_pairs.items():
+            bidirectional_dict[term] = [
+                {
+                    'term': syn_term,
+                    'similarity': info['similarity'],
+                    'is_specialized': info['is_specialized']
+                }
+                for syn_term, info in syn_map.items()
+            ]
+
+        logger.info(f"Ensured bidirectional synonyms: {len(synonyms_dict)} → {len(bidirectional_dict)} terms")
+        return bidirectional_dict
+
+    def update_semantic_synonyms_to_db(
+        self,
+        synonyms_dict: Dict[str, List[Dict[str, Any]]],
+        cluster_mapping: Dict[str, int] = None,
+        cluster_names: Dict[int, str] = None
+    ):
+        """
+        抽出した意味的類義語とクラスタ情報をDBに保存
+
+        重要: cluster_mappingの全用語を処理するため、類義語がない用語もdomainが更新される
+
+        Args:
+            synonyms_dict: 類義語辞書 {term: [{"term": ..., "similarity": ...}]}
+            cluster_mapping: クラスタマッピング {term: cluster_id} ※全用語を含む
+            cluster_names: クラスタ名マッピング {cluster_id: "軸受技術"}
+        """
+        if not cluster_mapping:
+            logger.warning("No cluster_mapping provided, skipping domain update")
+            return 0
+
         engine = create_engine(self.connection_string)
 
         updated_count = 0
+        synonyms_count = 0
+        no_synonyms_count = 0
+        noise_count = 0
+
+        # 類義語の双方向性を保証: A→Bの関係があればB→Aも追加
+        bidirectional_synonyms = self._ensure_bidirectional_synonyms(synonyms_dict)
+
         with engine.begin() as conn:
-            for term, synonyms in synonyms_dict.items():
-                # 類義語のリスト（用語名のみ）
+            # cluster_mappingの全用語をループ（類義語なしでもdomain更新）
+            for term, cluster_id in cluster_mapping.items():
+                # 1. 類義語を取得（双方向性保証済み）
+                synonyms = bidirectional_synonyms.get(term, [])
                 synonym_terms = [s['term'] for s in synonyms]
 
+                # 2. domainを決定（全用語に必ず値を設定）
+                if cluster_id >= 0:
+                    # LLM命名があればそれを使用、なければフォールバック
+                    if cluster_names and cluster_id in cluster_names:
+                        domain = cluster_names[cluster_id]
+                    else:
+                        domain = f"クラスタ{cluster_id}"
+                else:
+                    domain = "未分類"
+                    noise_count += 1
+
+                # 統計カウント
+                if synonyms:
+                    synonyms_count += 1
+                else:
+                    no_synonyms_count += 1
+
                 try:
+                    # 3. 無条件で上書き（COALESCEなし）
+                    # Note: 'aliases'列に類義語を保存（semantic_synonymsは存在しない）
                     conn.execute(
                         text(f"""
                             UPDATE {self.jargon_table_name}
-                            SET semantic_synonyms = :synonyms
+                            SET aliases = :synonyms,
+                                domain = :domain
                             WHERE term = :term
                         """),
-                        {"term": term, "synonyms": synonym_terms}
+                        {"term": term, "synonyms": synonym_terms, "domain": domain}
                     )
                     updated_count += 1
                 except Exception as e:
-                    logger.error(f"Error updating semantic synonyms for term '{term}': {e}")
+                    logger.error(f"Error updating term '{term}': {e}", exc_info=True)
 
-        logger.info(f"Updated semantic synonyms for {updated_count} terms in database")
+        logger.info(f"Updated domain field for {updated_count} terms in database:")
+        logger.info(f"  - With synonyms: {synonyms_count} terms")
+        logger.info(f"  - Without synonyms: {no_synonyms_count} terms")
+        logger.info(f"  - Noise cluster (未分類): {noise_count} terms")
+
         return updated_count
 
     async def analyze_and_save(self, output_path: str = "output/term_clusters.json", include_hierarchy: bool = True, use_llm_naming: bool = False) -> Dict[str, Any]:

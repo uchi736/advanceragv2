@@ -246,8 +246,7 @@ def render_term_card(term_data: pd.Series):
         <div class="term-headword">{term_data['term']}</div>
         <div class="term-definition">{term_data['definition']}</div>
         <div class="term-meta">
-            <strong>分野:</strong> {term_data.get('domain', 'N/A')} | 
-            <strong>信頼度:</strong> {term_data.get('confidence_score', 1.0):.2f}
+            <strong>分野:</strong> {term_data.get('domain', 'N/A')}
         </div>
         <div class="term-meta">
             <strong>類義語:</strong> {', '.join(term_data['aliases']) if term_data['aliases'] else 'なし'}

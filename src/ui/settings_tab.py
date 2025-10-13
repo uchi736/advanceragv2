@@ -88,6 +88,22 @@ def _render_chunking_settings(values, defaults):
 def _render_search_rag_settings(values, defaults):
     st.markdown("#### 🔍 検索・RAG設定")
     st.session_state.form_values['collection_name'] = st.text_input("コレクション名", values.get("collection_name", defaults.collection_name), key="setting_collection_name_v7")
+
+    # デフォルト検索モード選択
+    search_mode_options = ["hybrid", "vector", "keyword"]
+    search_mode_labels = {"hybrid": "ハイブリッド検索", "vector": "ベクトル検索", "keyword": "キーワード検索"}
+    current_mode = values.get("default_search_type", defaults.default_search_type)
+    mode_idx = search_mode_options.index(current_mode) if current_mode in search_mode_options else 0
+    selected_mode = st.selectbox(
+        "デフォルト検索モード",
+        search_mode_options,
+        index=mode_idx,
+        format_func=lambda x: search_mode_labels[x],
+        key="setting_default_search_type_v7",
+        help="チャットで使用するデフォルトの検索モードを選択します"
+    )
+    st.session_state.form_values['default_search_type'] = selected_mode
+
     st.session_state.form_values['final_k'] = st.slider("最終検索結果数 (Final K)", 1, 20, int(values.get("final_k", defaults.final_k)), key="setting_final_k_v7")
     st.session_state.form_values['vector_search_k'] = st.number_input("ベクトル検索数 (Vector K)", 1, 50, int(values.get("vector_search_k", defaults.vector_search_k)), key="setting_vector_k_v7")
     st.session_state.form_values['keyword_search_k'] = st.number_input("キーワード検索数 (Keyword K)", 1, 50, int(values.get("keyword_search_k", defaults.keyword_search_k)), key="setting_keyword_k_v7")
@@ -146,7 +162,7 @@ def _render_pdf_processing_settings(values, defaults):
     )
 
 def _apply_settings(form_values):
-    from state import initialize_rag_system
+    from src.ui.state import initialize_rag_system
     try:
         form_values["openai_api_key"] = None
         new_config = Config(**form_values)
@@ -163,7 +179,7 @@ def _apply_settings(form_values):
         st.error(f"❌ 設定の適用中にエラーが発生しました: {type(e).__name__} - {e}")
 
 def _reset_to_defaults(env_defaults):
-    from state import initialize_rag_system
+    from src.ui.state import initialize_rag_system
     st.info("設定をデフォルト値にリセットし、システムを再初期化します...")
     
     default_config = Config()

@@ -138,28 +138,35 @@ class JapaneseTextProcessor:
     def normalize_text(self, text: str) -> str:
         """
         Normalizes text, focusing on removing OCR artifacts like unwanted spaces in Japanese text.
+        IMPORTANT: Preserves newlines to maintain sentence boundaries for term extraction.
         """
         # NFKC normalization (converts full-width chars to half-width)
         text = unicodedata.normalize('NFKC', text)
 
-        # Step 1: Unify all whitespace-like characters (including newlines, tabs) to a single space
-        text = re.sub(r'[\s\n\t]+', ' ', text)
+        # Step 1: Normalize whitespace BUT preserve newlines
+        # Replace tabs with spaces
+        text = text.replace('\t', ' ')
+        # Collapse multiple spaces (but not newlines) into single space
+        text = re.sub(r'[ ]+', ' ', text)
+        # Limit consecutive newlines to maximum of 2 (paragraph break)
+        text = re.sub(r'\n{3,}', '\n\n', text)
 
         # Step 2: Remove spaces adjacent to any Japanese character (Kanji, Hiragana, Katakana)
-        # This is a more aggressive and robust approach.
-        text = re.sub(r'([ぁ-んァ-ヴー一-龠])\s', r'\1', text)
-        text = re.sub(r'\s([ぁ-んァ-ヴー一-龠])', r'\1', text)
+        # BUT do NOT remove newlines - only spaces
+        text = re.sub(r'([ぁ-んァ-ヴー一-龠]) ', r'\1', text)
+        text = re.sub(r' ([ぁ-んァ-ヴー一-龠])', r'\1', text)
 
-        # Step 3: Remove spaces around punctuation and brackets
-        text = re.sub(r'\s*([（(])\s*', r'\1', text)
-        text = re.sub(r'\s*([)）])\s*', r'\1', text)
-        text = re.sub(r'\s*([、。，．])\s*', r'\1', text)
-        text = re.sub(r'\s*([:])\s*', r'\1', text)
+        # Step 3: Remove spaces around punctuation and brackets (but not newlines)
+        text = re.sub(r' *([（(]) *', r'\1', text)
+        text = re.sub(r' *([)）]) *', r'\1', text)
+        text = re.sub(r' *([、。，．]) *', r'\1', text)
+        text = re.sub(r' *([:]) *', r'\1', text)
 
         # Step 4: Remove spaces between numbers and Japanese characters (e.g., "2050 年" -> "2050年")
-        text = re.sub(r'(\d)\s+([ぁ-んァ-ヴー一-龠])', r'\1\2', text)
+        text = re.sub(r'(\d) +([ぁ-んァ-ヴー一-龠])', r'\1\2', text)
 
-        # Collapse any remaining multiple whitespaces (for English parts)
-        text = re.sub(r'\s+', ' ', text)
-        
+        # Step 5: Collapse any remaining multiple spaces (for English parts)
+        # This will not affect newlines
+        text = re.sub(r'[ ]+', ' ', text)
+
         return text.strip()

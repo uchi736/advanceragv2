@@ -163,7 +163,7 @@ class AzureDocumentIntelligenceProcessor:
                     "content_format": result.content_format
                 }
                 extracted_elements["texts"].append((result.content, metadata))
-            
+
             # ページ情報を処理
             if hasattr(result, 'pages') and result.pages:
                 for page_num, page in enumerate(result.pages, 1):

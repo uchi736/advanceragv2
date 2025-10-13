@@ -1,7 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(myenv/Scripts/python.exe -c \"\nfrom sudachipy import tokenizer, dictionary\ntok = dictionary.Dictionary().create()\ntest_texts = [''2段コンプレッサ'', ''3層構造'', ''第3図システム'']\nfor text in test_texts:\n    print(f''\\n{text}:'')\n    for t in tok.tokenize(text, tokenizer.Tokenizer.SplitMode.A):\n        pos = t.part_of_speech()\n        print(f''  {t.surface()} -> 品詞: {pos[0]}, 細分類: {pos[1]}, {pos[2]}, {pos[3]}'')\n\")"
+      "Bash(myenv/Scripts/python.exe check_schema.py:*)",
+      "Bash(myenv/Scripts/python.exe -c \"import hdbscan; import umap; print(''hdbscan version:'', hdbscan.__version__); print(''umap version:'', umap.__version__)\")",
+      "Bash(myenv/Scripts/pip install hdbscan umap-learn)",
+      "Bash(myenv/Scripts/python.exe test_semantic_synonyms.py:*)",
+      "Bash(git log:*)",
+      "Bash(myenv/Scripts/python.exe:*)",
+      "Bash(myenv/Scripts/streamlit.exe run app.py)",
+      "Bash(taskkill:*)",
+      "Bash(findstr:*)",
+      "Bash(python -c \"import sys; [print(line) for line in sys.stdin if any(k in line for k in [''''テスト'''', ''''閾値'''', ''''Recall'''', ''''最適'''', ''''結果'''', ''''=='''', ''''完了''''])]\")",
+      "Bash(chcp:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(del:*)"
     ],
     "deny": [],
     "ask": []
