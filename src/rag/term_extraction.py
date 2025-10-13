@@ -90,36 +90,38 @@ class JargonDictionaryManager:
                     domain TEXT,
                     aliases TEXT[],
                     related_terms TEXT[],
-                    confidence_score FLOAT DEFAULT 1.0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_term ON {self.table_name} (LOWER(term))"))
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_aliases ON {self.table_name} USING GIN(aliases)"))
+
+            # 既存テーブルにconfidence_scoreカラムがある場合は削除
+            conn.execute(text(f"""
+                ALTER TABLE {self.table_name}
+                DROP COLUMN IF EXISTS confidence_score
+            """))
             conn.commit()
 
     def add_term(self, term: str, definition: str, domain: Optional[str] = None,
-                 aliases: Optional[List[str]] = None, related_terms: Optional[List[str]] = None,
-                 confidence_score: float = 1.0) -> bool:
+                 aliases: Optional[List[str]] = None, related_terms: Optional[List[str]] = None) -> bool:
         """用語を辞書に追加または更新"""
         try:
             with self.engine.connect() as conn:
                 conn.execute(text(f"""
                     INSERT INTO {self.table_name}
-                    (term, definition, domain, aliases, related_terms, confidence_score)
-                    VALUES (:term, :definition, :domain, :aliases, :related_terms, :confidence_score)
+                    (term, definition, domain, aliases, related_terms)
+                    VALUES (:term, :definition, :domain, :aliases, :related_terms)
                     ON CONFLICT (term) DO UPDATE SET
                         definition = EXCLUDED.definition,
                         domain = EXCLUDED.domain,
                         aliases = EXCLUDED.aliases,
                         related_terms = EXCLUDED.related_terms,
-                        confidence_score = EXCLUDED.confidence_score,
                         updated_at = CURRENT_TIMESTAMP
                 """), {
                     "term": term, "definition": definition, "domain": domain,
-                    "aliases": aliases or [], "related_terms": related_terms or [],
-                    "confidence_score": confidence_score
+                    "aliases": aliases or [], "related_terms": related_terms or []
                 })
                 conn.commit()
             return True
@@ -137,7 +139,7 @@ class JargonDictionaryManager:
             with self.engine.connect() as conn:
                 placeholders = ', '.join([f':term_{i}' for i in range(len(terms))])
                 query = text(f"""
-                    SELECT term, definition, domain, aliases, related_terms, confidence_score
+                    SELECT term, definition, domain, aliases, related_terms
                     FROM {self.table_name}
                     WHERE LOWER(term) IN ({placeholders})
                     OR term = ANY(:aliases_check)
@@ -149,8 +151,7 @@ class JargonDictionaryManager:
                 for row in rows:
                     results[row.term] = {
                         "definition": row.definition, "domain": row.domain,
-                        "aliases": row.aliases or [], "related_terms": row.related_terms or [],
-                        "confidence_score": row.confidence_score
+                        "aliases": row.aliases or [], "related_terms": row.related_terms or []
                     }
         except Exception as e:
             logger.error(f"Error looking up terms: {e}")
