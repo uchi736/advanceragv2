@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from sudachipy import tokenizer, dictionary
+from src.utils.profiler import get_profiler, timer
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,9 @@ class AdvancedStatisticalExtractor:
 
     def _safe_tokenize(self, text: str, mode):
         """大きなテキストを安全にトークン化（Sudachi制限回避）"""
+        # プロファイラーでカウント
+        get_profiler().count_sudachi_call()
+
         text_bytes = text.encode('utf-8')
 
         # 制限以下ならそのまま処理
@@ -174,57 +178,92 @@ class AdvancedStatisticalExtractor:
         ]
         return [re.compile(p) for p in patterns]
 
-    def extract_candidates(self, text: str) -> Dict[str, int]:
+    def extract_candidates_with_spans(self, text: str) -> Dict[str, Set[Tuple[int, int]]]:
         """
-        候補用語の抽出（ハイブリッドアプローチ）
+        候補用語とスパン位置を抽出（ハイブリッドアプローチ + スパン追跡）
 
         Args:
             text: 入力テキスト
 
         Returns:
-            候補用語と出現頻度の辞書
+            候補用語 -> スパン位置集合のマッピング
+            例: {"舶用エンジン": {(50, 55), (120, 125)}}
         """
-        candidates = defaultdict(int)
+        candidates_with_spans = defaultdict(set)
 
-        # 1. 正規表現パターンマッチング（最優先：括弧付き略語、型式番号など）
+        # 1. 正規表現パターンマッチング（スパン付き）
         if self.use_regex_patterns:
-            pattern_candidates = self._extract_by_patterns(text)
-            for term, freq in pattern_candidates.items():
-                candidates[term] += freq
+            pattern_spans = self._extract_by_patterns_with_spans(text)
+            for term, spans in pattern_spans.items():
+                candidates_with_spans[term].update(spans)
 
-        # 2. Mode C: 自然な複合語を長単位で抽出
-        mode_c_candidates = self._extract_with_mode_c(text)
-        for term, freq in mode_c_candidates.items():
-            candidates[term] += freq
+        # 2. Mode C: 自然な複合語
+        mode_c_spans = self._extract_with_mode_c_with_spans(text)
+        for term, spans in mode_c_spans.items():
+            candidates_with_spans[term].update(spans)
 
-        # 3. Mode A + n-gram: 短単位からn-gram生成
-        ngram_candidates = self._extract_ngrams(text)
-        for term, freq in ngram_candidates.items():
-            candidates[term] += freq
+        # 3. Mode A + n-gram
+        ngram_spans = self._extract_ngrams_with_spans(text)
+        for term, spans in ngram_spans.items():
+            candidates_with_spans[term].update(spans)
 
-        # 4. 複合名詞の抽出（Mode A使用）
-        compound_candidates = self._extract_compound_nouns(text)
-        for term, freq in compound_candidates.items():
-            candidates[term] += freq
+        # 4. 複合名詞
+        compound_spans = self._extract_compound_nouns_with_spans(text)
+        for term, spans in compound_spans.items():
+            candidates_with_spans[term].update(spans)
 
+        return candidates_with_spans
+
+    def merge_candidates_by_spans(
+        self,
+        candidates_with_spans: Dict[str, Set[Tuple[int, int]]]
+    ) -> Dict[str, int]:
+        """
+        スパン重複を排除して真の頻度を計算
+
+        Args:
+            candidates_with_spans: 候補用語とスパン位置の集合
+
+        Returns:
+            候補用語とユニークなスパン数（真の頻度）
+        """
         # 最小頻度フィルタ
         filtered = {
-            term: freq
-            for term, freq in candidates.items()
-            if freq >= self.min_frequency
+            term: len(spans)
+            for term, spans in candidates_with_spans.items()
+            if len(spans) >= self.min_frequency
         }
 
         return filtered
 
-    def _extract_with_mode_c(self, text: str) -> Dict[str, int]:
+    def extract_candidates(self, text: str) -> Dict[str, int]:
         """
-        Mode C（長単位）による複合語抽出
+        候補用語の抽出（スパンベース重複排除版）
+
+        Args:
+            text: 入力テキスト
+
+        Returns:
+            候補用語と出現頻度の辞書（スパン重複排除済み）
+        """
+        # スパン付きで抽出
+        candidates_with_spans = self.extract_candidates_with_spans(text)
+
+        # スパン重複排除して頻度計算
+        candidates = self.merge_candidates_by_spans(candidates_with_spans)
+
+        return candidates
+
+    def _extract_with_mode_c_with_spans(self, text: str) -> Dict[str, Set[Tuple[int, int]]]:
+        """
+        Mode C（長単位）による複合語抽出（スパン付き）
         自然な複合語をそのまま取得（例: "舶用ディーゼルエンジン"）
         """
-        mode_c_terms = defaultdict(int)
+        mode_c_terms = defaultdict(set)
 
         tokens = self._safe_tokenize(text, self.sudachi_mode_c)
 
+        offset = 0  # テキスト内の累積オフセット
         for token in tokens:
             term = token.surface()
             pos = token.part_of_speech()[0]
@@ -232,55 +271,99 @@ class AdvancedStatisticalExtractor:
             # 名詞系のみを対象とし、複合語として成立しているもの
             if pos in ['名詞'] and len(term) >= 2:
                 if self._is_valid_term(term):
-                    mode_c_terms[term] += 1
+                    # findを使ってスパンを計算
+                    start = text.find(term, offset)
+                    if start != -1:
+                        span = (start, start + len(term))
+                        mode_c_terms[term].add(span)
+                        offset = start + len(term)
+                    else:
+                        offset += len(term)
+            else:
+                offset += len(term)
 
         return mode_c_terms
 
-    def _extract_ngrams(self, text: str) -> Dict[str, int]:
-        """n-gram抽出（品詞ベース：名詞連続のみ）"""
-        ngrams = defaultdict(int)
+    def _extract_with_mode_c(self, text: str) -> Dict[str, int]:
+        """Mode C複合語抽出（後方互換用）"""
+        mode_c_spans = self._extract_with_mode_c_with_spans(text)
+        return {term: len(spans) for term, spans in mode_c_spans.items()}
 
-        # Sudachiでトークン化（Mode A: 短単位）
-        tokens = self._safe_tokenize(text, self.sudachi_mode_a)
+    def _extract_ngrams_with_spans(self, text: str) -> Dict[str, Set[Tuple[int, int]]]:
+        """n-gram抽出（文単位処理、品詞ベース：名詞連続のみ、スパン付き）"""
+        ngrams = defaultdict(set)
 
-        # 名詞・接頭辞の連続を抽出
-        noun_sequences = []
-        current_sequence = []
+        # ===== 追加: 文単位で分割 =====
+        sentences = self._split_into_sentences(text)
 
-        for token in tokens:
-            pos = token.part_of_speech()[0]
+        current_offset = 0  # テキスト全体でのオフセット
 
-            # 名詞または接頭辞の場合は連続に追加
-            if pos in ['名詞', '接頭辞']:
-                current_sequence.append(token.surface())
-            else:
-                # 連続が終了したら保存
-                if len(current_sequence) >= self.min_term_length:
-                    noun_sequences.append(current_sequence)
-                current_sequence = []
+        for sentence in sentences:
+            # 文の開始位置を計算
+            sentence_start = text.find(sentence, current_offset)
+            if sentence_start == -1:
+                continue
 
-        # 最後の連続も保存
-        if len(current_sequence) >= self.min_term_length:
-            noun_sequences.append(current_sequence)
+            # 文内でトークン化（Mode A: 短単位）
+            tokens = self._safe_tokenize(sentence, self.sudachi_mode_a)
 
-        # 名詞連続からn-gramを生成
-        for sequence in noun_sequences:
-            for n in range(self.min_term_length, min(self.max_term_length + 1, len(sequence) + 1)):
-                for i in range(len(sequence) - n + 1):
-                    ngram = ''.join(sequence[i:i+n])
+            # 名詞・接頭辞の連続を抽出（文内のみ）
+            noun_sequences = []
+            current_sequence = []
+            current_start = 0
+            offset = 0
 
-                    if self._is_valid_term(ngram):
-                        ngrams[ngram] += 1
+            for token in tokens:
+                pos = token.part_of_speech()[0]
+                surface = token.surface()
+
+                # 名詞または接頭辞の場合は連続に追加
+                if pos in ['名詞', '接頭辞']:
+                    if not current_sequence:
+                        current_start = offset
+                    current_sequence.append(surface)
+                else:
+                    # 連続が終了したら保存
+                    if len(current_sequence) >= self.min_term_length:
+                        noun_sequences.append((current_sequence, current_start))
+                    current_sequence = []
+
+                offset += len(surface)
+
+            # 最後の連続も保存
+            if len(current_sequence) >= self.min_term_length:
+                noun_sequences.append((current_sequence, current_start))
+
+            # n-gramを生成（文内のみ）
+            for sequence, start_pos in noun_sequences:
+                for n in range(self.min_term_length, min(self.max_term_length + 1, len(sequence) + 1)):
+                    for i in range(len(sequence) - n + 1):
+                        ngram_parts = sequence[i:i+n]
+                        ngram = ''.join(ngram_parts)
+
+                        if self._is_valid_term(ngram):
+                            # 絶対位置を計算
+                            ngram_start = sentence_start + start_pos + len(''.join(sequence[:i]))
+                            ngram_end = ngram_start + len(ngram)
+                            span = (ngram_start, ngram_end)
+                            ngrams[ngram].add(span)
+
+            # 次の文の検索開始位置を更新
+            current_offset = sentence_start + len(sentence)
 
         return ngrams
 
-    def _extract_by_patterns(self, text: str) -> Dict[str, int]:
-        """正規表現パターンによる抽出"""
-        pattern_terms = defaultdict(int)
+    def _extract_ngrams(self, text: str) -> Dict[str, int]:
+        """n-gram抽出（後方互換用）"""
+        ngram_spans = self._extract_ngrams_with_spans(text)
+        return {term: len(spans) for term, spans in ngram_spans.items()}
+
+    def _extract_by_patterns_with_spans(self, text: str) -> Dict[str, Set[Tuple[int, int]]]:
+        """正規表現パターンによる抽出（スパン付き）"""
+        pattern_terms = defaultdict(set)
 
         for pattern in self.term_patterns:
-            matches = pattern.finditer(text)
-            for match in matches:
+            for match in pattern.finditer(text):
                 term = match.group()
 
                 # 括弧を除去（（BMS） → BMS）
@@ -291,61 +374,105 @@ class AdvancedStatisticalExtractor:
                     term = term.split(':')[0].strip()
 
                 if self._is_valid_term(term):
-                    pattern_terms[term] += 1
+                    span = (match.start(), match.end())
+                    pattern_terms[term].add(span)
 
         return pattern_terms
 
-    def _extract_compound_nouns(self, text: str) -> Dict[str, int]:
-        """複合名詞の抽出（Mode A使用）"""
-        compound_nouns = defaultdict(int)
+    def _extract_by_patterns(self, text: str) -> Dict[str, int]:
+        """正規表現パターンによる抽出（後方互換用）"""
+        pattern_spans = self._extract_by_patterns_with_spans(text)
+        return {term: len(spans) for term, spans in pattern_spans.items()}
 
-        tokens = self._safe_tokenize(text, self.sudachi_mode_a)
-        current_compound = []
+    def _extract_compound_nouns_with_spans(self, text: str) -> Dict[str, Set[Tuple[int, int]]]:
+        """複合名詞の抽出（文単位処理、Mode A使用、スパン付き）"""
+        compound_nouns = defaultdict(set)
 
-        for idx, token in enumerate(tokens):
-            pos = token.part_of_speech()[0]
+        # ===== 追加: 文単位で分割 =====
+        sentences = self._split_into_sentences(text)
 
-            # 名詞または接頭辞の場合
-            if pos in ['名詞', '接頭辞']:
+        current_offset = 0  # テキスト全体でのオフセット
+
+        for sentence in sentences:
+            # 文の開始位置を計算
+            sentence_start = text.find(sentence, current_offset)
+            if sentence_start == -1:
+                continue
+
+            # 文内でトークン化（Mode A）
+            tokens = self._safe_tokenize(sentence, self.sudachi_mode_a)
+            current_compound = []
+            current_start = 0
+            offset = 0
+
+            for idx, token in enumerate(tokens):
+                pos = token.part_of_speech()[0]
                 surface = token.surface()
-                # 数字のみのトークンは複合語を区切る（18, 2050などを除外）
-                if re.match(r'^\d+\.?\d*$', surface):
-                    # 次のトークンが助数詞かチェック（2段、3層など）
-                    if idx + 1 < len(tokens):
-                        next_token = tokens[idx + 1]
-                        next_pos = next_token.part_of_speech()
-                        # pos[2]が"助数詞可能"なら数字を含める
-                        if len(next_pos) > 2 and next_pos[2] and '助数詞' in next_pos[2]:
-                            current_compound.append(surface)
-                            continue
 
-                    # 助数詞でない場合は複合語を区切る
+                # 名詞または接頭辞の場合
+                if pos in ['名詞', '接頭辞']:
+                    # 数字のみのトークンは複合語を区切る（18, 2050などを除外）
+                    if re.match(r'^\d+\.?\d*$', surface):
+                        # 次のトークンが助数詞かチェック（2段、3層など）
+                        if idx + 1 < len(tokens):
+                            next_token = tokens[idx + 1]
+                            next_pos = next_token.part_of_speech()
+                            # pos[2]が"助数詞可能"なら数字を含める
+                            if len(next_pos) > 2 and next_pos[2] and '助数詞' in next_pos[2]:
+                                if not current_compound:
+                                    current_start = offset
+                                current_compound.append(surface)
+                                offset += len(surface)
+                                continue
+
+                        # 助数詞でない場合は複合語を保存して区切る
+                        if len(current_compound) >= self.min_term_length:
+                            compound = ''.join(current_compound)
+                            # 複合語の最大長チェック（15文字以内）
+                            if len(compound) <= 15 and self._is_valid_term(compound):
+                                # 絶対位置を計算
+                                abs_start = sentence_start + current_start
+                                span = (abs_start, abs_start + len(compound))
+                                compound_nouns[compound].add(span)
+                        current_compound = []
+                    else:
+                        # 通常の名詞は複合語に追加
+                        if not current_compound:
+                            current_start = offset
+                        current_compound.append(surface)
+                else:
+                    # 複合名詞が終了
                     if len(current_compound) >= self.min_term_length:
                         compound = ''.join(current_compound)
                         # 複合語の最大長チェック（15文字以内）
                         if len(compound) <= 15 and self._is_valid_term(compound):
-                            compound_nouns[compound] += 1
+                            # 絶対位置を計算
+                            abs_start = sentence_start + current_start
+                            span = (abs_start, abs_start + len(compound))
+                            compound_nouns[compound].add(span)
                     current_compound = []
-                else:
-                    # 通常の名詞は複合語に追加
-                    current_compound.append(surface)
-            else:
-                # 複合名詞が終了
-                if len(current_compound) >= self.min_term_length:
-                    compound = ''.join(current_compound)
-                    # 複合語の最大長チェック（15文字以内）
-                    if len(compound) <= 15 and self._is_valid_term(compound):
-                        compound_nouns[compound] += 1
-                current_compound = []
 
-        # 最後の複合名詞
-        if len(current_compound) >= self.min_term_length:
-            compound = ''.join(current_compound)
-            # 複合語の最大長チェック（15文字以内）
-            if len(compound) <= 15 and self._is_valid_term(compound):
-                compound_nouns[compound] += 1
+                offset += len(surface)
+
+            # 最後の複合名詞
+            if len(current_compound) >= self.min_term_length:
+                compound = ''.join(current_compound)
+                # 複合語の最大長チェック（15文字以内）
+                if len(compound) <= 15 and self._is_valid_term(compound):
+                    # 絶対位置を計算
+                    abs_start = sentence_start + current_start
+                    span = (abs_start, abs_start + len(compound))
+                    compound_nouns[compound].add(span)
+
+            # 次の文の検索開始位置を更新
+            current_offset = sentence_start + len(sentence)
 
         return compound_nouns
+
+    def _extract_compound_nouns(self, text: str) -> Dict[str, int]:
+        """複合名詞の抽出（後方互換用）"""
+        compound_spans = self._extract_compound_nouns_with_spans(text)
+        return {term: len(spans) for term, spans in compound_spans.items()}
 
     def _is_valid_term(self, term: str) -> bool:
         """用語の妥当性チェック（文字列 + 品詞ベース）"""
@@ -523,7 +650,9 @@ class AdvancedStatisticalExtractor:
     def detect_related_terms(
         self,
         candidates: List[str],
-        full_text: str
+        full_text: str,
+        max_related: int = 5,
+        min_term_length: int = 4
     ) -> Dict[str, List[str]]:
         """
         関連語検出（包含関係・PMI共起）
@@ -531,6 +660,8 @@ class AdvancedStatisticalExtractor:
         Args:
             candidates: 候補用語リスト
             full_text: 全文テキスト
+            max_related: 1用語あたりの最大関連語数（デフォルト5）
+            min_term_length: 関連語として認める最小文字数（デフォルト4）
 
         Returns:
             用語と関連語のマッピング
@@ -542,7 +673,8 @@ class AdvancedStatisticalExtractor:
 
         # 1. 包含関係（上位語/下位語）
         for i, cand1 in enumerate(valid_candidates):
-            if len(cand1) < 2:
+            # ===== 追加: 極短い部分語はスキップ =====
+            if len(cand1) < min_term_length:
                 continue
             for cand2 in valid_candidates[i+1:]:
                 if cand1 != cand2:
@@ -597,13 +729,19 @@ class AdvancedStatisticalExtractor:
                         if pmi >= pmi_threshold:
                             related[cand1].add(cand2)
 
-        # 関連語のフィルタリング（不完全な用語を除外）
+        # ===== 修正: 関連語のフィルタリング強化 =====
         filtered_related = {}
-        for term, related_list in related.items():
-            # 各関連語が有効な用語かチェック
-            valid_related = [r for r in related_list if self._is_valid_term(r)]
+        for term, related_set in related.items():
+            related_list = list(related_set)
+            # 各関連語が有効かつmin_term_length以上かチェック
+            valid_related = [
+                r for r in related_list
+                if self._is_valid_term(r) and len(r) >= min_term_length
+            ]
+
+            # 上位max_related個のみ採用（頻度順でソートするのが理想だが、簡易版として先頭から）
             if valid_related:
-                filtered_related[term] = valid_related
+                filtered_related[term] = valid_related[:max_related]
 
         return filtered_related
 
@@ -681,16 +819,18 @@ class AdvancedStatisticalExtractor:
 
             term_freq_per_doc.append(doc_term_count)
 
-        # 2. TF-IDF計算
+        # 2. TF-IDF計算（平滑化版）
         tfidf_scores = {}
         for term in vocabulary:
             # 各文書でのTF-IDF合計
             total_tfidf = 0.0
             for doc_tf in term_freq_per_doc:
-                tf = doc_tf.get(term, 0)
-                if tf > 0 and df.get(term, 0) > 0:
-                    # TF-IDF = TF * log(N / DF)
-                    idf = math.log(N / df[term])
+                raw_tf = doc_tf.get(term, 0)
+                if raw_tf > 0 and df.get(term, 0) > 0:
+                    # サブリニアTF（log圧縮で頻度10と100の差を緩和）
+                    tf = 1 + math.log(raw_tf)
+                    # Laplace平滑化IDF（df=Nで0、df=0でエラーを防ぐ）
+                    idf = math.log((N + 1) / (df[term] + 1)) + 1
                     total_tfidf += tf * idf
 
             tfidf_scores[term] = total_tfidf
@@ -973,11 +1113,13 @@ class AdvancedStatisticalExtractor:
         return terms[:top_n]
 
     def _split_into_sentences(self, text: str) -> List[str]:
-        """文単位で分割"""
-        # 日本語の文末記号で分割
-        sentences = re.split(r'[。！？\n]+', text)
-        # 空文字列を除外
-        return [s.strip() for s in sentences if s.strip()]
+        """文単位で厳格に分割（改行・句読点・括弧を境界とする）"""
+        # 強い区切り: 句点、改行、括弧、読点
+        # ※改行を「強い文境界」として扱い、誤結合を防止
+        # ※句点後のスペースも境界として扱う（Azure DIのMarkdown変換対応）
+        sentences = re.split(r'[。！？\n「」『』、]+|(?<=[。！？])\s+', text)
+        # 極端に短い断片を除外（3文字未満）
+        return [s.strip() for s in sentences if s.strip() and len(s.strip()) >= 3]
 
     def export_to_json(
         self,
@@ -1474,7 +1616,12 @@ class EnhancedTermExtractor:
         # Phase 2: ヒューリスティック分類
         logger.info("Phase 2: Heuristic classification...")
         variants = self.statistical_extractor.detect_variants(candidates)
-        related = self.statistical_extractor.detect_related_terms(candidates, full_text)
+        related = self.statistical_extractor.detect_related_terms(
+            candidates,
+            full_text,
+            max_related=self.config.max_related_terms_per_candidate,
+            min_term_length=self.config.min_related_term_length
+        )
 
         # Phase 3: PGVector意味的類似度
         logger.info("Phase 3: Semantic similarity with PGVector...")

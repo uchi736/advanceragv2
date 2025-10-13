@@ -251,19 +251,12 @@ def _render_query_info():
                 st.write("**補強後クエリ:**")
                 if jargon_info.get("matched_terms") and jargon_info.get("augmented_query"):
                     # DBにマッチあり - 拡張されたクエリを表示
-                    st.text_area(
-                        "Augmented Query",
-                        value=jargon_info['augmented_query'],
-                        height=200,
-                        disabled=True,
-                        label_visibility="collapsed",
-                        key=f"augmented_query_display_{len(st.session_state.messages)}"
-                    )
+                    st.markdown("```text\n" + jargon_info['augmented_query'] + "\n```")
                 else:
                     # DBにマッチなし - 元のクエリのまま
                     st.info("💡 専門用語辞書にマッチする用語が見つかりませんでした。元のクエリのまま検索します。")
                     if jargon_info.get("augmented_query"):
-                        st.code(jargon_info['augmented_query'], language=None)
+                        st.markdown("```text\n" + jargon_info['augmented_query'] + "\n```")
                 st.divider()
             
             # Query expansion details
