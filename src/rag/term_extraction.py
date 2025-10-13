@@ -82,6 +82,7 @@ class JargonDictionaryManager:
     def _init_jargon_table(self):
         """専門用語辞書テーブルの初期化"""
         with self.engine.connect() as conn:
+            # テーブル作成（存在しない場合のみ）
             conn.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
                     id SERIAL PRIMARY KEY,
@@ -94,14 +95,30 @@ class JargonDictionaryManager:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+
+            # インデックス作成
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_term ON {self.table_name} (LOWER(term))"))
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_aliases ON {self.table_name} USING GIN(aliases)"))
 
-            # 既存テーブルにconfidence_scoreカラムがある場合は削除
-            conn.execute(text(f"""
-                ALTER TABLE {self.table_name}
-                DROP COLUMN IF EXISTS confidence_score
-            """))
+            # 既存テーブルのスキーマをチェックして不要なカラムを削除
+            result = conn.execute(text(f"""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = :table_name
+            """), {"table_name": self.table_name}).fetchall()
+
+            existing_columns = {row[0] for row in result}
+            expected_columns = {
+                'id', 'term', 'definition', 'domain',
+                'aliases', 'related_terms', 'created_at', 'updated_at'
+            }
+
+            # 不要なカラムを削除（confidence_score等の古いカラム）
+            columns_to_drop = existing_columns - expected_columns
+            for col in columns_to_drop:
+                logger.info(f"Dropping obsolete column: {col} from {self.table_name}")
+                conn.execute(text(f"ALTER TABLE {self.table_name} DROP COLUMN IF EXISTS {col}"))
+
             conn.commit()
 
     def add_term(self, term: str, definition: str, domain: Optional[str] = None,
