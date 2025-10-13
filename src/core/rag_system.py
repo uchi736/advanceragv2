@@ -299,20 +299,67 @@ class RAGSystem:
                 jargon_terms = inputs.get("jargon_terms", [])
                 matched_terms = self.jargon_manager.lookup_terms(jargon_terms) if jargon_terms else {}
 
-                # Augment query with definitions
+                # Augment query with definitions, aliases, and related terms using LLM
+                from langchain_core.output_parsers import StrOutputParser
+
                 question = inputs.get("question", "")
                 if matched_terms:
-                    augmentation_text = "\n".join([
-                        f"{term}: {info['definition']}"
-                        for term, info in matched_terms.items()
-                    ])
-                    inputs["augmented_query"] = f"{question}\n\n関連用語:\n{augmentation_text}"
+                    # 1. Format jargon information
+                    augmentation_parts = []
+                    for term, info in matched_terms.items():
+                        # 定義
+                        parts = [f"{term}: {info['definition']}"]
+
+                        # 類義語
+                        if info.get('aliases'):
+                            aliases_str = ", ".join(info['aliases'])
+                            parts.append(f"  類義語: {aliases_str}")
+
+                        # 関連語
+                        if info.get('related_terms'):
+                            related_str = ", ".join(info['related_terms'])
+                            parts.append(f"  関連: {related_str}")
+
+                        augmentation_parts.append("\n".join(parts))
+
+                    jargon_definitions = "\n\n".join(augmentation_parts)
+
+                    # 2. Optimize query using LLM with LCEL chain
+                    try:
+                        logger.info(f"Optimizing query with LLM: '{question}'")
+                        logger.debug(f"Jargon definitions:\n{jargon_definitions}")
+
+                        augmentation_chain = (
+                            get_query_augmentation_prompt()
+                            | self.llm
+                            | StrOutputParser()
+                        )
+
+                        optimized_query = augmentation_chain.invoke({
+                            "original_question": question,
+                            "jargon_definitions": jargon_definitions
+                        })
+
+                        inputs["augmented_query"] = optimized_query.strip()
+                        inputs["raw_augmented_query"] = f"{question}\n\n関連用語:\n{jargon_definitions}"  # For debugging
+
+                        logger.info(f"✓ LLM optimization successful")
+                        logger.info(f"  Original: {question}")
+                        logger.info(f"  Optimized: {optimized_query.strip()}")
+
+                    except Exception as llm_error:
+                        logger.warning(f"✗ LLM query optimization failed: {llm_error}, using fallback")
+                        logger.warning(f"  Error type: {type(llm_error).__name__}")
+                        # Fallback: simple concatenation
+                        inputs["augmented_query"] = f"{question}\n\n関連用語:\n{jargon_definitions}"
+                        inputs["raw_augmented_query"] = inputs["augmented_query"]
                 else:
                     inputs["augmented_query"] = question
 
                 inputs["jargon_augmentation"] = {
                     "matched_terms": matched_terms,
-                    "extracted_terms": inputs["jargon_terms"]
+                    "extracted_terms": inputs["jargon_terms"],
+                    "augmented_query": inputs["augmented_query"]
                 }
             except Exception as e:
                 logger.warning(f"Jargon augmentation failed: {e}")
@@ -486,7 +533,10 @@ class RAGSystem:
     def query(self, question: str, search_type: str = None) -> Dict[str, Any]:
         """Standard query operation using RAG chain."""
         with get_openai_callback() as cb:
-            result = self.retrieval_chain.invoke({"question": question})
+            result = self.retrieval_chain.invoke({
+                "question": question,
+                "use_jargon_augmentation": self.config.enable_jargon_augmentation
+            })
 
             # Calculate confidence scores for retrieved docs
             if "context" in result and hasattr(result["context"], "__len__"):
@@ -543,7 +593,10 @@ class RAGSystem:
 
             # Execute retrieval and generation
             with get_openai_callback() as cb:
-                rag_results = self.retrieval_chain.invoke({"question": question})
+                rag_results = self.retrieval_chain.invoke({
+                    "question": question,
+                    "use_jargon_augmentation": self.config.enable_jargon_augmentation
+                })
 
                 # Process jargon if enabled
                 jargon_definitions = ""
@@ -599,7 +652,7 @@ class RAGSystem:
         use_rag_fusion: bool = False,
         use_jargon_augmentation: bool = False,
         use_reranking: bool = False,
-        search_type: str = "ハイブリッド検索",
+        search_type: str = None,  # None uses config.default_search_type
         config: Any = None
     ) -> Dict[str, Any]:
         """Unified query method supporting all advanced RAG features.
@@ -620,13 +673,17 @@ class RAGSystem:
         from langchain_core.output_parsers import StrOutputParser
         from src.rag.prompts import get_answer_generation_prompt
 
-        # Map Japanese search type to English
+        # Use config default if search_type not specified
+        if search_type is None:
+            search_type = self.config.default_search_type
+
+        # Map Japanese search type to English (for backward compatibility)
         search_type_map = {
             "ハイブリッド検索": "hybrid",
             "ベクトル検索": "vector",
             "キーワード検索": "keyword"
         }
-        search_type_eng = search_type_map.get(search_type, "hybrid")
+        search_type_eng = search_type_map.get(search_type, search_type)  # Pass through if already English
 
         with get_openai_callback() as cb:
             # Prepare input for retrieval chain

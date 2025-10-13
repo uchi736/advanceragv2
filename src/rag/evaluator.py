@@ -372,9 +372,10 @@ class RAGEvaluator:
             
             try:
                 # Retrieve documents using the RAG system
-                retrieval_result = await rag_system.retrieval_chain.ainvoke(
-                    {"question": question}
-                )
+                retrieval_result = await rag_system.retrieval_chain.ainvoke({
+                    "question": question,
+                    "use_jargon_augmentation": rag_system.config.enable_jargon_augmentation
+                })
                 
                 # Extract retrieved documents
                 retrieved_docs = retrieval_result.get('context', [])

@@ -221,16 +221,49 @@ def _render_query_info():
         st.session_state.get("last_reranking"),
         st.session_state.get("last_jargon_augmentation")
     ]):
-        with st.expander("🔍 クエリ処理の詳細", expanded=False):
+        with st.expander("🔍 クエリ処理の詳細", expanded=True):
             
             # Jargon augmentation details
             if st.session_state.get("last_jargon_augmentation"):
                 st.markdown("**🏷️ 専門用語補強**")
                 jargon_info = st.session_state.last_jargon_augmentation
+
+                # 抽出された専門用語
                 if jargon_info.get("extracted_terms"):
                     st.write(f"抽出された専門用語: {', '.join(jargon_info['extracted_terms'])}")
-                if jargon_info.get("augmented_query"):
-                    st.write(f"補強後クエリ: `{jargon_info['augmented_query']}`")
+
+                # マッチした専門用語と定義
+                if jargon_info.get("matched_terms"):
+                    st.write("**マッチした専門用語と定義:**")
+                    for term, info in jargon_info["matched_terms"].items():
+                        definition = info.get("definition", "定義なし")
+                        st.write(f"  • **{term}**: {definition}")
+
+                        # 類義語を表示
+                        if info.get("aliases"):
+                            st.write(f"    - 類義語: {', '.join(info['aliases'])}")
+
+                        # 関連語を表示
+                        if info.get("related_terms"):
+                            st.write(f"    - 関連語: {', '.join(info['related_terms'])}")
+
+                # 補強後クエリ（常に表示）
+                st.write("**補強後クエリ:**")
+                if jargon_info.get("matched_terms") and jargon_info.get("augmented_query"):
+                    # DBにマッチあり - 拡張されたクエリを表示
+                    st.text_area(
+                        "Augmented Query",
+                        value=jargon_info['augmented_query'],
+                        height=200,
+                        disabled=True,
+                        label_visibility="collapsed",
+                        key=f"augmented_query_display_{len(st.session_state.messages)}"
+                    )
+                else:
+                    # DBにマッチなし - 元のクエリのまま
+                    st.info("💡 専門用語辞書にマッチする用語が見つかりませんでした。元のクエリのまま検索します。")
+                    if jargon_info.get("augmented_query"):
+                        st.code(jargon_info['augmented_query'], language=None)
                 st.divider()
             
             # Query expansion details
