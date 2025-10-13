@@ -22,7 +22,7 @@ class JapaneseHybridRetriever(BaseRetriever):
     connection_string: str
     config_params: Config
     text_processor: JapaneseTextProcessor
-    search_type: str = "ハイブリッド検索"
+    search_type: str = "hybrid"
     engine: Optional[Engine] = None
     
     def __init__(self, engine: Optional[Engine] = None, **kwargs):
@@ -64,27 +64,29 @@ class JapaneseHybridRetriever(BaseRetriever):
                 if is_japanese and self.config_params.enable_japanese_search:
                     tokens = self.text_processor.tokenize(normalized_query)
                     if not tokens: return []
-                    
-                    conditions = []
-                    params = {}
-                    for i, token in enumerate(tokens[:5]):
-                        if len(token) >= self.config_params.japanese_min_token_length:
-                            conditions.append(f"(content LIKE :token{i} OR tokenized_content LIKE :token{i})")
-                            params[f"token{i}"] = f"%{token}%"
 
-                    if not conditions: return []
+                    # Filter tokens by minimum length
+                    filtered_tokens = [t for t in tokens[:5] if len(t) >= self.config_params.japanese_min_token_length]
+                    if not filtered_tokens: return []
 
-                    # Use OR for better recall in Japanese search
-                    where_clause = " OR ".join(conditions)
-                    sql = f"""
-                        SELECT chunk_id, content, metadata, 
-                               (LENGTH(content) - LENGTH(REPLACE(LOWER(content), LOWER(:original_query), ''))) / LENGTH(:original_query) AS score
-                        FROM document_chunks 
-                        WHERE {where_clause} AND collection_name = :collection_name
+                    # Create tsquery format: "token1 | token2 | token3" (OR search for better recall)
+                    tsquery_str = " | ".join(filtered_tokens)
+
+                    # Use PostgreSQL Full-Text Search with GIN index on tokenized_content
+                    sql = """
+                        SELECT chunk_id, content, metadata,
+                               ts_rank(to_tsvector('simple', tokenized_content), to_tsquery('simple', :tsquery)) AS score
+                        FROM document_chunks
+                        WHERE to_tsvector('simple', tokenized_content) @@ to_tsquery('simple', :tsquery)
+                              AND collection_name = :collection_name
                         ORDER BY score DESC LIMIT :k;
                     """
-                    params.update({"original_query": normalized_query, "collection_name": self.config_params.collection_name, "k": self.config_params.keyword_search_k})
-                    db_result = conn.execute(text(sql), params)
+
+                    db_result = conn.execute(text(sql), {
+                        "tsquery": tsquery_str,
+                        "collection_name": self.config_params.collection_name,
+                        "k": self.config_params.keyword_search_k
+                    })
                 else:
                     sql = f"""
                         SELECT chunk_id, content, metadata, 
@@ -126,10 +128,13 @@ class JapaneseHybridRetriever(BaseRetriever):
     def _get_relevant_documents(self, query: str, *, run_manager: Optional[CallbackManagerForRetrieverRun] = None, **kwargs: Any) -> List[Document]:
         config = kwargs.get("config")
 
-        if self.search_type == 'ベクトル検索':
+        if self.search_type == 'vector':
             vres = self._vector_search(query, config=config)
             retrieved_docs = [doc for doc, score in vres]
-        else: # Hybrid search
+        elif self.search_type == 'keyword':
+            kres = self._keyword_search(query, config=config)
+            retrieved_docs = [doc for doc, score in kres]
+        else:  # hybrid (default)
             vres = self._vector_search(query, config=config)
             kres = self._keyword_search(query, config=config)
             retrieved_docs = self._reciprocal_rank_fusion_hybrid(vres, kres)
