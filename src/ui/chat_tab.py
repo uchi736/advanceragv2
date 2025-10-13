@@ -433,24 +433,24 @@ def _render_bulk_query_section(rag_system):
                             
                             answer = response.get("answer", "回答なし")
                             sources = response.get("sources", [])
-                            
-                            source_docs = ", ".join(sorted(list(set([s.metadata.get('document_id', '不明') for s in sources]))))
-                            
+
+                            source_docs = ", ".join(sorted(list(set([s['metadata'].get('document_id', '不明') for s in sources]))))
+
                             result_row = {
                                 "質問": question,
                                 "回答": answer,
                                 "参照ソース": source_docs,
                             }
-                            
+
                             # Add expected sources to the result
                             for idx, expected_source in enumerate(expected_sources):
                                 result_row[f"想定の引用元{idx+1}"] = expected_source
-                            
+
                             # Add retrieved chunks
                             for idx, s in enumerate(sources):
-                                doc_id = s.metadata.get('document_id', '不明')
-                                chunk_id = s.metadata.get('chunk_id', f'N/A_{idx}')
-                                cell_content = f"Source: {doc_id}, Chunk ID: {chunk_id}\n---\n{s.page_content}"
+                                doc_id = s['metadata'].get('document_id', '不明')
+                                chunk_id = s['metadata'].get('chunk_id', f'N/A_{idx}')
+                                cell_content = f"Source: {doc_id}, Chunk ID: {chunk_id}\n---\n{s['content']}"
                                 result_row[f"チャンク{idx+1}"] = cell_content
 
                             st.session_state.bulk_results.append(result_row)
