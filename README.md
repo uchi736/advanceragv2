@@ -17,6 +17,13 @@
 
 ## 🎯 アップデート履歴
 
+### 2025年10月13日 - 専門用語クエリ拡張とPostgreSQL FTS改善
+- **LLMベースのクエリ最適化**: QUERY_AUGMENTATIONプロンプトとLCELチェーンによる検索クエリの自動拡張
+- **類義語・関連語を含む検索拡張**: 専門用語の定義・類義語・関連語を活用した高精度な検索
+- **PostgreSQL FTS最適化**: 日本語全文検索をLIKE句からGINインデックス対応に改善、AWS RDS/Aurora対応
+- **ts_rank()スコアリング**: PostgreSQL標準のTFベーススコアリングによる検索精度向上
+- **UI改善**: 補強後クエリの表示改善、専門用語情報を展開表示
+
 ### 2025年10月7日 - 略語抽出精度の大幅改善
 - **括弧内略語抽出**: （BMS）、(AVR)、（EMS）などの全角・半角括弧に対応
 - **略語の特別扱い**: 問答無用でLLMフィルタまで保護、定義生成を強制実施
@@ -47,7 +54,9 @@
 ### 🔍 検索・取得
 - **ハイブリッド検索**: ベクトル検索とキーワード検索を組み合わせ、Reciprocal Rank Fusion (RRF) によって検索精度を向上
 - **日本語特化**: SudachiPyによる日本語形態素解析、ハイブリッドMode（A+C）で最適化
+- **PostgreSQL FTS**: `to_tsvector()` + `to_tsquery()` + `ts_rank()` によるGINインデックス対応全文検索（AWS RDS/Aurora対応）
 - **PGVector**: PostgreSQL + pgvectorによる高速ベクトル検索とSQLの統合
+- **専門用語クエリ拡張**: LLMベースのクエリ最適化により、定義・類義語・関連語を活用した高精度な検索
 
 ### 📝 専門用語処理
 - **SemReRank**: Personalized PageRankで低頻度でも重要な用語を抽出
@@ -58,10 +67,11 @@
   - Phase 4: LLM最終判定（必須）
 - **RAG定義生成**: ベクトル検索 + LLMによる高品質な定義の自動生成
 - **埋め込みキャッシュ**: pgvectorで再計算コストを削減
+- **クエリ最適化**: QUERY_AUGMENTATIONプロンプトとLCELチェーンによる検索クエリの自動拡張
 
 ### 🛠️ その他の機能
 - **Text-to-SQL**: 自然言語クエリを自動的にSQLに変換
-- **複数のPDF処理**: PyMuPDF（高速）とAzure Document Intelligence（高精度）
+- **Azure Document Intelligence**: PDFの高精度処理とMarkdown出力
 - **評価システム**: Recall、Precision、MRR、nDCG、Hit Rateなどの定量評価
 - **ナレッジグラフ**: 用語間の関連性を可視化・探索
 - **直感的なUI**: Streamlitベースのタブ構成インターフェース
@@ -79,22 +89,22 @@
 │   ├── core/                   # コアビジネスロジック
 │   │   └── rag_system.py       # RAGシステムのファサード
 │   ├── rag/                    # RAGシステムのコアモジュール
-│   │   ├── chains.py           # LangChainのチェーンとプロンプト設定
 │   │   ├── config.py           # 設定ファイル(Config)
-│   │   ├── document_parser.py  # レガシーPDF処理（PyMuPDF）
+│   │   ├── prompts.py          # LLMプロンプトテンプレート集
 │   │   ├── evaluator.py        # 評価システムモジュール
 │   │   ├── ingestion.py        # ドキュメントの取り込みと処理
 │   │   ├── term_extraction.py  # 専門用語抽出と類義語検出（統合版）
+│   │   ├── advanced_term_extraction.py  # SemReRank実装
+│   │   ├── semrerank.py        # Personalized PageRankアルゴリズム
 │   │   ├── retriever.py        # ハイブリッド検索リトリーバー
 │   │   ├── sql_handler.py      # Text-to-SQL機能の処理
 │   │   ├── text_processor.py   # 日本語テキスト処理
+│   │   ├── reverse_lookup.py   # 逆引き検索機能
+│   │   ├── vector_store_adapter.py  # ベクトルストアアダプター
 │   │   └── pdf_processors/     # PDF処理プロセッサ
-│   │       ├── base_processor.py      # 抽象基底クラス
-│   │       ├── pymupdf_processor.py   # PyMuPDF実装
 │   │       └── azure_di_processor.py  # Azure Document Intelligence実装
 │   ├── ui/                     # UIコンポーネント
 │   │   ├── chat_tab.py         # チャット画面
-│   │   ├── data_tab.py         # データ管理画面
 │   │   ├── dictionary_tab.py   # 辞書管理画面
 │   │   ├── documents_tab.py    # ドキュメント管理画面
 │   │   ├── evaluation_tab.py   # 評価システム画面
@@ -102,12 +112,16 @@
 │   │   ├── sidebar.py          # サイドバー
 │   │   └── state.py            # セッション状態管理
 │   ├── scripts/                # 拡張スクリプト
-│   │   ├── term_extractor_embeding.py  # 互換性レイヤー（deprecated）
-│   │   ├── term_clustering_analyzer.py # クラスタリング分析
-│   │   └── knowledge_graph/            # ナレッジグラフ機能
+│   │   ├── import_terms_to_db.py           # 用語辞書のDBインポート
+│   │   ├── term_extractor_embeding.py      # 互換性レイヤー（deprecated）
+│   │   ├── term_clustering_analyzer.py     # クラスタリング分析
+│   │   ├── extract_semantic_synonyms.py    # 意味ベース類義語抽出
+│   │   ├── fix_bidirectional_synonyms.py   # 双方向類義語修正
+│   │   └── knowledge_graph/                # ナレッジグラフ機能
 │   └── utils/                  # ユーティリティ関数
 │       ├── helpers.py          # ヘルパー関数
-│       └── style.py            # UIスタイル設定
+│       ├── style.py            # UIスタイル設定
+│       └── profiler.py         # パフォーマンスプロファイリング
 ├── docs/                       # ドキュメント
 │   ├── evaluation/             # 評価関連ドキュメント
 │   └── architecture/           # アーキテクチャドキュメント
@@ -149,6 +163,12 @@
       - `DB_PASSWORD`: パスワード
     - **注意**: PostgreSQLにpgvector拡張のインストールが必要です
 
+    **Azure Document Intelligence設定（必須）**:
+    - `AZURE_DI_ENDPOINT`: Azure Document IntelligenceのエンドポイントURL
+    - `AZURE_DI_API_KEY`: APIキー
+    - `AZURE_DI_MODEL`: 使用モデル（デフォルト: "prebuilt-layout"）
+    - `SAVE_MARKDOWN`: Markdown保存フラグ（デフォルト: "false"）
+
     **SemReRank設定（オプション）**:
     - `SEMRERANK_ENABLED`: SemReRankを有効化（デフォルト: true）
     - `SEMRERANK_SEED_PERCENTILE`: シード選定の上位パーセンタイル（デフォルト: 15.0）
@@ -156,14 +176,15 @@
     - `SEMRERANK_RELTOP`: 上位関連語の割合（デフォルト: 0.15）
     - `DEFINITION_GENERATION_PERCENTILE`: 定義生成の上位パーセンタイル（デフォルト: 15.0）
 
-    **PDF処理方式の設定（オプション）**:
-    - `PDF_PROCESSOR_TYPE`: "legacy" | "pymupdf" | "azure_di" (デフォルト: "legacy")
+    **専門用語クエリ拡張設定（オプション）**:
+    - `ENABLE_JARGON_AUGMENTATION`: 専門用語によるクエリ拡張を有効化（デフォルト: true）
+    - `MAX_JARGON_TERMS_PER_QUERY`: クエリあたりの最大専門用語数（デフォルト: 5）
 
-    **Azure Document Intelligence設定（azure_di使用時のみ）**:
-    - `AZURE_DI_ENDPOINT`: Azure Document IntelligenceのエンドポイントURL
-    - `AZURE_DI_API_KEY`: APIキー
-    - `AZURE_DI_MODEL`: 使用モデル（デフォルト: "prebuilt-layout"）
-    - `SAVE_MARKDOWN`: Markdown保存フラグ（デフォルト: "false"）
+    **検索設定（オプション）**:
+    - `DEFAULT_SEARCH_TYPE`: デフォルトの検索モード（"hybrid" | "vector" | "keyword"、デフォルト: "hybrid"）
+    - `FINAL_K`: 最終検索結果数（デフォルト: 5）
+    - `VECTOR_SEARCH_K`: ベクトル検索数（デフォルト: 3）
+    - `KEYWORD_SEARCH_K`: キーワード検索数（デフォルト: 3）
 
 ## 使い方
 
@@ -184,29 +205,18 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 SemReRank用の埋め込みキャッシュテーブルは自動的に作成されます。
 
-### PDF処理方式の選択
+### ドキュメント処理
 
-本システムは3つのPDF処理方式をサポートしています：
+本システムは **Azure Document Intelligence** を使用してドキュメントを処理します：
 
-1. **レガシー (既存のDocumentParser)**
-   - デフォルトの処理方式
-   - 既存の安定した実装
+- **サポートフォーマット**: PDF（全ての入力ファイルに対応）
+- **高精度なレイアウト解析**: 複雑な文書構造を正確に抽出
+- **Markdown形式での出力**: 構造化されたテキスト出力（オプション）
+- **クラウドベースの処理**: Azure AIによる高度な文書理解
 
-2. **PyMuPDF (高速・軽量)**
-   - 高速なPDF処理
-   - メモリ効率が良い
-   - テキスト、画像、テーブルの抽出
-
-3. **Azure Document Intelligence (高精度)**
-   - 高精度なレイアウト解析
-   - Markdown形式での出力
-   - 複雑な文書構造の正確な抽出
-   - クラウドベースの処理
-
-処理方式は以下の方法で選択できます：
-- **UIから**: サイドバーまたは詳細設定タブで選択
-- **環境変数**: `.env`ファイルで`PDF_PROCESSOR_TYPE`を設定
-- **プログラム**: Configオブジェクトで`pdf_processor_type`を指定
+設定方法：
+- **UIから**: サイドバーまたは詳細設定タブで Azure DI のエンドポイントとAPIキーを設定
+- **環境変数**: `.env`ファイルで`AZURE_DI_ENDPOINT`、`AZURE_DI_API_KEY`、`AZURE_DI_MODEL`を設定
 
 ## ナレッジグラフ エクスプローラー（新機能）
 
@@ -381,18 +391,22 @@ graph TB
 - **フロントエンド**: Streamlit
 - **バックエンド**: Python 3.9+
 - **ベクトルデータベース**: PostgreSQL + pgvector
+- **全文検索**: PostgreSQL FTS (GINインデックス、AWS RDS/Aurora対応)
 - **言語モデル**: Azure OpenAI
-  - GPT-4o: チャット・定義生成・専門用語判定
+  - GPT-4o / GPT-4.1-mini: チャット・定義生成・専門用語判定・クエリ最適化
   - text-embedding-3-small: 埋め込み生成（1536次元）
 - **日本語処理**: SudachiPy（ハイブリッドMode A + C）
-- **検索エンジン**: LangChain + カスタムハイブリッドリトリーバー
+- **検索エンジン**: LangChain + カスタムハイブリッドリトリーバー + LCEL
 - **専門用語抽出**:
   - TF-IDF + C-value
   - SemReRank (Personalized PageRank)
-  - 6つの類義語検出手法
-- **PDF処理**:
-  - PyMuPDF (fitz): 高速・軽量処理
-  - Azure Document Intelligence: 高精度レイアウト解析・Markdown出力
+  - 6つの類義語検出手法（意味的類似度、表記ゆれ、LLM判定）
+- **クエリ最適化**:
+  - QUERY_AUGMENTATIONプロンプト
+  - LCELチェーンによる自動拡張
+  - 定義・類義語・関連語の統合
+- **ドキュメント処理**:
+  - Azure Document Intelligence: PDFの高精度レイアウト解析・Markdown出力
 
 ## 専門用語抽出と自動クラスタリング機能
 
