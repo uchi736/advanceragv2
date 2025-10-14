@@ -816,16 +816,30 @@ class RAGSystem:
             return result
 
     async def extract_terms(self, input_dir: str | Path, output_json: str | Path) -> None:
+        """Extract terms with LangSmith tracing disabled to avoid excessive requests."""
+        import os
         from src.rag.term_extraction import run_extraction_pipeline
-        # Use connection_string only if using PGVector, otherwise pass None
-        pg_url = self.connection_string
-        await run_extraction_pipeline(
-            Path(input_dir), Path(output_json),
-            self.config, self.llm, self.embeddings,
-            self.vector_store, pg_url, self.config.jargon_table_name,
-            jargon_manager=None
-        )
-        print(f"[TermExtractor] Extraction complete -> {output_json}")
+
+        # Temporarily disable LangSmith tracing for term extraction
+        original_tracing = os.environ.get("LANGCHAIN_TRACING_V2")
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
+        try:
+            # Use connection_string only if using PGVector, otherwise pass None
+            pg_url = self.connection_string
+            await run_extraction_pipeline(
+                Path(input_dir), Path(output_json),
+                self.config, self.llm, self.embeddings,
+                self.vector_store, pg_url, self.config.jargon_table_name,
+                jargon_manager=None
+            )
+            print(f"[TermExtractor] Extraction complete -> {output_json}")
+        finally:
+            # Restore original tracing setting
+            if original_tracing is not None:
+                os.environ["LANGCHAIN_TRACING_V2"] = original_tracing
+            else:
+                os.environ.pop("LANGCHAIN_TRACING_V2", None)
 
     # --- Evaluation Methods ---
     def initialize_evaluator(self,
