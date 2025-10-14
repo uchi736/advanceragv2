@@ -15,14 +15,19 @@ class SQLHandler:
         """Retrieves all chunks for a given document ID."""
         if not document_id:
             return pd.DataFrame()
-        
+
         try:
             with self.engine.connect() as conn:
                 query = text("""
                     SELECT chunk_id, content, tokenized_content, metadata
-                    FROM document_chunks 
+                    FROM document_chunks
                     WHERE document_id = :doc_id AND collection_name = :coll_name
-                    ORDER BY chunk_id
+                    ORDER BY
+                        COALESCE(
+                            CAST(SUBSTRING(chunk_id FROM '_chunk_(\\d+)') AS INTEGER),
+                            999999
+                        ),
+                        chunk_id
                 """)
                 df = pd.read_sql(query, conn, params={"doc_id": document_id, "coll_name": self.config.collection_name})
             return df

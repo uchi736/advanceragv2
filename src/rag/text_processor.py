@@ -143,7 +143,11 @@ class JapaneseTextProcessor:
         # NFKC normalization (converts full-width chars to half-width)
         text = unicodedata.normalize('NFKC', text)
 
-        # Step 1: Normalize whitespace BUT preserve newlines
+        # Step 1: Remove spaces around newlines FIRST (common in Azure DI output)
+        # This prevents line-break artifacts like "削 減" becoming "削減"
+        text = re.sub(r' *\n *', '\n', text)
+
+        # Step 2: Normalize whitespace BUT preserve newlines
         # Replace tabs with spaces
         text = text.replace('\t', ' ')
         # Collapse multiple spaces (but not newlines) into single space
@@ -151,8 +155,11 @@ class JapaneseTextProcessor:
         # Limit consecutive newlines to maximum of 2 (paragraph break)
         text = re.sub(r'\n{3,}', '\n\n', text)
 
-        # Step 2: Remove spaces adjacent to any Japanese character (Kanji, Hiragana, Katakana)
-        # BUT do NOT remove newlines - only spaces
+        # Step 3: Remove spaces between Japanese characters (more aggressive)
+        # This handles cases where words are incorrectly split like "削 減" -> "削減"
+        text = re.sub(r'([ぁ-んァ-ヴー一-龠])[ ]+([ぁ-んァ-ヴー一-龠])', r'\1\2', text)
+
+        # Step 4: Remove spaces adjacent to any Japanese character
         text = re.sub(r'([ぁ-んァ-ヴー一-龠]) ', r'\1', text)
         text = re.sub(r' ([ぁ-んァ-ヴー一-龠])', r'\1', text)
 

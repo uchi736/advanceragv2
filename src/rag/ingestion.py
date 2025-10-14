@@ -2,6 +2,7 @@
 Document ingestion handler with improved batch processing and connection management.
 """
 import json
+import re
 from pathlib import Path
 from typing import List
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
@@ -62,14 +63,67 @@ class IngestionHandler:
             ("#", "Header 1"),
             ("##", "Header 2"),
             ("###", "Header 3"),
+            ("####", "Header 4"),
         ]
         markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
-        
+
         # Fallback splitter for content without headers
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap
         )
+
+        def normalize_header_line(line: str) -> str:
+            """Normalize Markdown header spacing for comparison."""
+            if not line:
+                return ""
+            match = re.match(r'^(#{1,6})\s*(.*)$', line.strip())
+            if not match:
+                return line.strip()
+            marker, title = match.groups()
+            return f"{marker} {title}".strip()
+
+        def ensure_header(text: str, header_line: str) -> str:
+            """Ensure the chunk starts with the desired header line at most once."""
+            if not text:
+                return header_line or ""
+
+            stripped = text.lstrip('\n')
+            if not header_line:
+                return stripped
+
+            normalized_header = normalize_header_line(header_line)
+            lines = stripped.splitlines()
+            if lines:
+                first_line_normalized = normalize_header_line(lines[0])
+                if first_line_normalized == normalized_header:
+                    return stripped
+
+            return f"{header_line}\n\n{stripped}" if stripped else header_line
+
+        def remove_leading_header(text: str, header_line: str) -> str:
+            """Strip the leading header line (if present) from a chunk."""
+            if not text:
+                return ""
+
+            stripped = text.lstrip('\n')
+            if not header_line:
+                return stripped
+
+            normalized_header = normalize_header_line(header_line)
+            lines = stripped.splitlines()
+            if lines:
+                first_line_normalized = normalize_header_line(lines[0])
+                if first_line_normalized == normalized_header:
+                    remainder = "\n".join(lines[1:])
+                    return remainder.lstrip('\n')
+
+            return stripped
+
+        def has_meaningful_body(text: str, header_line: str) -> bool:
+            """Return True when a chunk has content beyond an optional leading header."""
+            body = remove_leading_header(text, header_line)
+            return bool(body.strip())
 
         all_chunks = []
         for i, d in enumerate(docs):
@@ -81,20 +135,59 @@ class IngestionHandler:
                 # Normalize text content first
                 normalized_content = self.text_processor.normalize_text(d.page_content)
 
+                # Ensure markdown headers are properly formatted for splitting
+                # Add newline before headers if missing
+                normalized_content = re.sub(r'([^\n])(#{1,6})', r'\1\n\2', normalized_content)
+                # Add space after header markers if missing
+                normalized_content = re.sub(r'(^#{1,6})([^# \n])', r'\1 \2', normalized_content, flags=re.MULTILINE)
+
                 # Split by markdown headers
                 md_header_splits = markdown_splitter.split_text(normalized_content)
+
+                # Debug logging (with encoding safety for Windows)
+                print(f"Markdown splitter created {len(md_header_splits)} sections from {doc_id}")
+                for idx, split in enumerate(md_header_splits[:3]):  # Show first 3 sections
+                    try:
+                        preview = split.page_content[:100].replace('\n', ' ')
+                        # Try to safely encode for Windows console
+                        safe_preview = preview.encode('cp932', errors='replace').decode('cp932')
+                        print(f"  Section {idx}: {safe_preview}...")
+                    except Exception:
+                        # If encoding fails, show a generic message
+                        print(f"  Section {idx}: [Content preview unavailable due to encoding]")
 
                 # Further split chunks that are too large
                 doc_chunks = []
                 for split in md_header_splits:
+                    # Restore headers from metadata to content
+                    content = split.page_content
+                    header_line = ""
+
+                    # Add headers back to the beginning of content
+                    if split.metadata:
+                        for marker, meta_key in headers_to_split_on:
+                            value = split.metadata.get(meta_key)
+                            if value and isinstance(value, str) and value.strip():
+                                header_line = f"{marker} {value.strip()}"
+
+                    # Update the page_content with headers included
+                    split.page_content = ensure_header(content, header_line)
+
+                    # Now split if too large
                     if len(split.page_content) > self.config.chunk_size:
                         sub_chunks = text_splitter.split_documents([split])
                         for sub_chunk in sub_chunks:
                             # Ensure metadata from header split is preserved
                             sub_chunk.metadata.update(split.metadata)
+                            sub_chunk.page_content = ensure_header(sub_chunk.page_content, header_line)
+
+                            if not has_meaningful_body(sub_chunk.page_content, header_line):
+                                continue
+
                             doc_chunks.append(sub_chunk)
                     else:
-                        doc_chunks.append(split)
+                        if has_meaningful_body(split.page_content, header_line):
+                            doc_chunks.append(split)
 
                 # Add metadata to chunks for this document
                 for chunk in doc_chunks:
@@ -107,7 +200,17 @@ class IngestionHandler:
                     all_chunks.append(chunk)
 
             except Exception as e:
-                print(f"Error chunking document {doc_id}: {e}")
+                try:
+                    error_msg = f"Error chunking document {doc_id}: {type(e).__name__}: {str(e)}"
+                    print(error_msg.encode('cp932', errors='replace').decode('cp932'))
+                except:
+                    print(f"Error chunking document: [encoding error in error message]")
+
+                try:
+                    import traceback
+                    traceback.print_exc()
+                except:
+                    print("Could not print stack trace due to encoding issues")
                 continue
 
         return all_chunks

@@ -341,6 +341,10 @@ class AdvancedStatisticalExtractor:
                         ngram_parts = sequence[i:i+n]
                         ngram = ''.join(ngram_parts)
 
+                        # 元テキスト照合: 存在しない複合語を排除
+                        if ngram not in sentence:
+                            continue
+
                         if self._is_valid_term(ngram):
                             # 絶対位置を計算
                             ngram_start = sentence_start + start_pos + len(''.join(sequence[:i]))
@@ -428,12 +432,14 @@ class AdvancedStatisticalExtractor:
                         # 助数詞でない場合は複合語を保存して区切る
                         if len(current_compound) >= self.min_term_length:
                             compound = ''.join(current_compound)
-                            # 複合語の最大長チェック（15文字以内）
-                            if len(compound) <= 15 and self._is_valid_term(compound):
-                                # 絶対位置を計算
-                                abs_start = sentence_start + current_start
-                                span = (abs_start, abs_start + len(compound))
-                                compound_nouns[compound].add(span)
+                            # 元テキスト照合: 存在しない複合語を排除
+                            if compound in sentence:
+                                # 複合語の最大長チェック（15文字以内）
+                                if len(compound) <= 15 and self._is_valid_term(compound):
+                                    # 絶対位置を計算
+                                    abs_start = sentence_start + current_start
+                                    span = (abs_start, abs_start + len(compound))
+                                    compound_nouns[compound].add(span)
                         current_compound = []
                     else:
                         # 通常の名詞は複合語に追加
@@ -444,12 +450,14 @@ class AdvancedStatisticalExtractor:
                     # 複合名詞が終了
                     if len(current_compound) >= self.min_term_length:
                         compound = ''.join(current_compound)
-                        # 複合語の最大長チェック（15文字以内）
-                        if len(compound) <= 15 and self._is_valid_term(compound):
-                            # 絶対位置を計算
-                            abs_start = sentence_start + current_start
-                            span = (abs_start, abs_start + len(compound))
-                            compound_nouns[compound].add(span)
+                        # 元テキスト照合: 存在しない複合語を排除
+                        if compound in sentence:
+                            # 複合語の最大長チェック（15文字以内）
+                            if len(compound) <= 15 and self._is_valid_term(compound):
+                                # 絶対位置を計算
+                                abs_start = sentence_start + current_start
+                                span = (abs_start, abs_start + len(compound))
+                                compound_nouns[compound].add(span)
                     current_compound = []
 
                 offset += len(surface)
@@ -457,12 +465,14 @@ class AdvancedStatisticalExtractor:
             # 最後の複合名詞
             if len(current_compound) >= self.min_term_length:
                 compound = ''.join(current_compound)
-                # 複合語の最大長チェック（15文字以内）
-                if len(compound) <= 15 and self._is_valid_term(compound):
-                    # 絶対位置を計算
-                    abs_start = sentence_start + current_start
-                    span = (abs_start, abs_start + len(compound))
-                    compound_nouns[compound].add(span)
+                # 元テキスト照合: 存在しない複合語を排除
+                if compound in sentence:
+                    # 複合語の最大長チェック（15文字以内）
+                    if len(compound) <= 15 and self._is_valid_term(compound):
+                        # 絶対位置を計算
+                        abs_start = sentence_start + current_start
+                        span = (abs_start, abs_start + len(compound))
+                        compound_nouns[compound].add(span)
 
             # 次の文の検索開始位置を更新
             current_offset = sentence_start + len(sentence)
@@ -476,8 +486,34 @@ class AdvancedStatisticalExtractor:
 
     def _is_valid_term(self, term: str) -> bool:
         """用語の妥当性チェック（文字列 + 品詞ベース）"""
-        # 空文字列・最小文字数チェック（3文字未満除外）
-        if not term or len(term) < 3:
+        # 空文字列チェック
+        if not term:
+            return False
+
+        # パターンベースのブラックリスト（図表・ページ番号など）
+        blacklist_patterns = [
+            r'^[pP]\d+$',        # p123, P456（ページ番号）
+            r'^[pP][pP]\d+$',    # pp123
+            r'^[fF]ig\d+$',      # fig1, Fig2（図番号）
+            r'^[tT](able|bl)\d+$',  # table1, tbl2（表番号）
+            r'^[eE]q\d+$',       # eq1, Eq2（式番号）
+            r'^[vV]\d*$',        # v, v1, v2, V3（バージョン）
+            r'^[vV]er\d*$',      # ver, ver1, ver2（バージョン）
+            r'^[nN]o\.?\d+$',    # no.1, No2（番号）
+            r'^[cC]h\d+$',       # ch1, Ch2（章番号）
+            r'^[sS]ec\d+$',      # sec1, Sec2（節番号）
+        ]
+
+        for pattern in blacklist_patterns:
+            if re.match(pattern, term):
+                return False
+
+        # 英数字コードの自動承認（ブラックリスト除外後）
+        if self._is_alphanumeric_code(term):
+            return True  # 品詞チェックをスキップして承認
+
+        # 最小文字数チェック（3文字未満除外）- 英数字コード以外に適用
+        if len(term) < 3:
             return False
 
         # 図表番号パターンを除外（第3図、第1表、第2式など）
@@ -548,6 +584,9 @@ class AdvancedStatisticalExtractor:
             'and', 'the', 'of', 'in', 'for', 'with', 'from', 'to', 'at', 'by',
             'stage', 'fig', 'figure', 'table', 'exterior', 'interior', 'single',
             'system', 'Fig', 'Table', 'Stage', 'System', 'Exterior', 'Interior', 'Single',
+            # 図表・ページ関連（パターンに引っかからないもの）
+            'page', 'Page', 'ref', 'Ref', 'reference', 'Reference',
+            'ver', 'version', 'Ver', 'Version', 'chapter', 'Chapter', 'section', 'Section',
             # 不完全な用語（語尾切れ）
             'システ', 'インタ', 'クーラ', 'アシスト', 'モータ', 'ロータ',
             'タービン', 'コンプレッサ', 'スタック', 'カモータ',
@@ -614,6 +653,29 @@ class AdvancedStatisticalExtractor:
         except Exception as e:
             # 形態素解析エラーの場合は除外（通さない）
             logger.debug(f"Tokenization failed for term: {term}, rejecting: {e}")
+            return False
+
+        return True
+
+    def _is_alphanumeric_code(self, term: str) -> bool:
+        """英数字コード（型式番号など）かどうかを判定"""
+
+        # 条件1: 英字と数字が両方含まれる
+        has_alpha = bool(re.search(r'[A-Za-z]', term))
+        has_digit = bool(re.search(r'[0-9]', term))
+        if not (has_alpha and has_digit):
+            return False
+
+        # 条件2: 全体が英数字+記号のみ
+        if not re.match(r'^[A-Za-z0-9\-_.]+$', term):
+            return False
+
+        # 条件3: 長さが2-15文字
+        if len(term) < 2 or len(term) > 15:
+            return False
+
+        # 条件4: ひらがな・カタカナを含まない
+        if re.search(r'[ぁ-んァ-ヴ]', term):
             return False
 
         return True

@@ -4,6 +4,7 @@ Azure Document Intelligence を使用したPDF処理プロセッサ
 
 import os
 import logging
+import re
 from typing import List, Dict, Any
 from pathlib import Path
 import base64
@@ -90,27 +91,54 @@ class AzureDocumentIntelligenceProcessor:
 
         # parse_pdfを呼び出して要素を取得
         elements = self.parse_pdf(file_path)
-        documents = []
 
-        # Markdownテキストをドキュメント化
+        # すべてのコンテンツを1つのドキュメントに結合
+        combined_content = []
+        combined_metadata = {
+            "source": file_path,
+            "processor": "azure_document_intelligence",
+            "model": self.model
+        }
+
+        # Markdownテキストを追加
         for text, metadata in elements.get("texts", []):
             if text and text.strip():
-                documents.append(Document(
-                    page_content=text,
-                    metadata=metadata
-                ))
+                combined_content.append(text)
+                # メタデータをマージ（重複を避ける）
+                for key, value in metadata.items():
+                    if key not in ["source", "processor", "model"]:
+                        combined_metadata[key] = value
 
-        # テーブルをMarkdown形式でドキュメント化
-        for table_data, metadata in elements.get("tables", []):
+        # テーブルをMarkdown形式で追加
+        for table_data, table_metadata in elements.get("tables", []):
             table_markdown = self.format_table_as_markdown(table_data)
             if table_markdown:
-                documents.append(Document(
-                    page_content=table_markdown,
-                    metadata=metadata
-                ))
+                # テーブルを区切り付きで追加
+                combined_content.append(f"\n\n{table_markdown}\n\n")
 
-        logger.info(f"Converted to {len(documents)} LangChain documents")
-        return documents
+        # 単一のDocumentを作成
+        if combined_content:
+            # Join content and clean up line-break artifacts
+            full_content = "\n\n".join(combined_content)
+
+            # Aggressive cleanup of Azure DI artifacts:
+            # 1. Remove spaces around line breaks first
+            full_content = re.sub(r' *\n *', '\n', full_content)
+
+            # 2. Remove ALL spaces adjacent to Japanese characters (more aggressive)
+            # This handles cases like "削 減" -> "削減"
+            full_content = re.sub(r'[ ]+([ぁ-んァ-ヴー一-龠々〆〤])', r'\1', full_content)
+            full_content = re.sub(r'([ぁ-んァ-ヴー一-龠々〆〤])[ ]+', r'\1', full_content)
+
+            document = Document(
+                page_content=full_content,
+                metadata=combined_metadata
+            )
+            logger.info(f"Converted to 1 combined LangChain document with {len(combined_content)} sections")
+            return [document]
+        else:
+            logger.warning(f"No content extracted from {file_path}")
+            return []
 
     def parse_pdf(self, file_path: str) -> Dict[str, List[Any]]:
         """
@@ -164,20 +192,9 @@ class AzureDocumentIntelligenceProcessor:
                 }
                 extracted_elements["texts"].append((result.content, metadata))
 
-            # ページ情報を処理
-            if hasattr(result, 'pages') and result.pages:
-                for page_num, page in enumerate(result.pages, 1):
-                    # ページのテキストを追加（必要に応じて）
-                    if hasattr(page, 'lines'):
-                        page_text = "\n".join([line.content for line in page.lines if hasattr(line, 'content')])
-                        if page_text:
-                            page_metadata = {
-                                "source": file_path,
-                                "page_number": page_num,
-                                "type": "text",
-                                "processor": "azure_document_intelligence"
-                            }
-                            extracted_elements["texts"].append((page_text, page_metadata))
+            # ページ情報の処理は不要（全体のMarkdownで十分）
+            # ページ単位でテキストを追加すると、同じPDFから複数のドキュメントが生成され、
+            # chunk_idがリセットされて重複する問題が発生する
             
             # テーブル情報を抽出
             if hasattr(result, 'tables') and result.tables:

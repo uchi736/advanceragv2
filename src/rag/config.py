@@ -81,7 +81,7 @@ class Config:
 
     # RAG and Search settings
     chunk_size: int = 1000
-    chunk_overlap: int = 200
+    chunk_overlap: int = 0  # No overlap to avoid duplicate content
     vector_search_k: int = 3
     keyword_search_k: int = 3
     final_k: int = 5

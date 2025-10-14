@@ -48,6 +48,29 @@ from langchain_core.runnables import RunnablePassthrough, RunnableLambda, Runnab
 
 # load_dotenv()  # Commented out - loaded in main script
 
+# スキーマ定義: 各テーブルの期待されるカラムと型
+EXPECTED_SCHEMAS = {
+    'document_chunks': [
+        ('id', 'SERIAL PRIMARY KEY'),
+        ('collection_name', 'VARCHAR(255)'),
+        ('document_id', 'VARCHAR(255)'),
+        ('chunk_id', 'VARCHAR(255)'),
+        ('content', 'TEXT'),
+        ('tokenized_content', 'TEXT'),
+        ('metadata', 'JSONB'),
+        ('created_at', 'TIMESTAMP')
+    ],
+    'parent_child_chunks': [
+        ('id', 'SERIAL PRIMARY KEY'),
+        ('collection_name', 'VARCHAR(255)'),
+        ('parent_chunk_id', 'VARCHAR(255)'),
+        ('parent_content', 'TEXT'),
+        ('child_chunk_ids', 'TEXT[]'),
+        ('metadata', 'JSONB'),
+        ('created_at', 'TIMESTAMP')
+    ]
+}
+
 def format_docs(docs: List[Any]) -> str:
     """Helper function to format documents for context."""
     if not docs:
@@ -252,6 +275,45 @@ class RAGSystem:
             """))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_parent_chunk_collection ON parent_child_chunks(collection_name)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_parent_chunk_id ON parent_child_chunks(parent_chunk_id)"))
+
+            # スキーマ検証とマイグレーション
+            self._validate_and_migrate_schema(conn)
+
+    def _validate_and_migrate_schema(self, conn):
+        """データベーススキーマを検証し、必要に応じてマイグレーション"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        for table_name, expected_columns in EXPECTED_SCHEMAS.items():
+            # 現在のカラムを取得
+            result = conn.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = :table_name
+            """), {"table_name": table_name}).fetchall()
+
+            existing_columns = {row[0] for row in result}
+            expected_column_names = {col[0] for col in expected_columns}
+
+            # 不要なカラムを削除
+            columns_to_drop = existing_columns - expected_column_names
+            for col in columns_to_drop:
+                logger.info(f"Dropping obsolete column: {col} from {table_name}")
+                conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {col}"))
+
+            # 不足しているカラムを追加
+            columns_to_add = expected_column_names - existing_columns
+            for col_name in columns_to_add:
+                # 型情報を取得
+                col_type = next((col[1] for col in expected_columns if col[0] == col_name), 'TEXT')
+                # PRIMARY KEYやUNIQUE等の制約は除外（ALTER TABLEでは追加できない）
+                col_type_clean = col_type.replace('PRIMARY KEY', '').replace('UNIQUE', '').replace('NOT NULL', '').strip()
+                if col_type_clean:  # 空文字列でない場合のみ追加
+                    logger.info(f"Adding missing column: {col_name} {col_type_clean} to {table_name}")
+                    try:
+                        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type_clean}"))
+                    except Exception as e:
+                        logger.warning(f"Failed to add column {col_name} to {table_name}: {e}")
 
     def _create_retrieval_chain(self) -> Runnable:
         """
