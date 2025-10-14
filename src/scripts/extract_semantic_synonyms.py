@@ -206,8 +206,8 @@ async def extract_and_save_semantic_synonyms(
         result = await analyzer.extract_semantic_synonyms_hybrid(
             specialized_terms=specialized_terms,
             candidate_terms=enriched_candidates,  # LLM定義付き候補用語を使用
-            similarity_threshold=0.50,  # 最適化結果: F1=83.3%, Recall=93.8%
-            max_synonyms=10,  # 閾値を下げたので増やす
+            # similarity_threshold: 削除（クラスタリング+LLM判定のみ使用）
+            max_synonyms=10,
             use_llm_naming=True,  # LLMによるクラスタ命名を有効化
             use_llm_for_candidates=True  # 候補用語に対してLLM類義語判定を有効化
         )
@@ -265,8 +265,8 @@ async def main():
         result = await analyzer.extract_semantic_synonyms_hybrid(
             specialized_terms=specialized_terms,
             candidate_terms=candidate_terms,
-            similarity_threshold=0.50,  # 最適化結果: F1=83.3%, Recall=93.8%
-            max_synonyms=10,  # 閾値を下げたので増やす
+            # similarity_threshold: 削除（クラスタリング+LLM判定のみ使用）
+            max_synonyms=10,
             use_llm_naming=True  # LLMによるクラスタ命名を有効化
         )
 

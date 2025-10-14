@@ -368,7 +368,7 @@ class TermClusteringAnalyzer:
         self,
         specialized_terms: List[Dict[str, Any]],
         candidate_terms: List[Dict[str, Any]],
-        similarity_threshold: float = 0.85,
+        similarity_threshold: float = None,  # Deprecated: 互換性のため残すが未使用
         max_synonyms: int = 5,
         use_llm_naming: bool = True,
         use_llm_for_candidates: bool = True
@@ -376,10 +376,13 @@ class TermClusteringAnalyzer:
         """
         2段階エンベディングによる意味ベース類義語抽出
 
+        フィルタリング: HDBSCANクラスタリング + LLM判定のみ
+        (コサイン類似度フィルタは削除: クラスタリング済みなので冗長)
+
         Args:
             specialized_terms: 専門用語リスト [{"term": "ETC", "definition": "...", "text": "ETC: ..."}]
             candidate_terms: 候補用語リスト [{"term": "過給機", "text": "過給機"}]
-            similarity_threshold: コサイン類似度の閾値
+            similarity_threshold: 非推奨（互換性のため残存、未使用）
             max_synonyms: 各用語の最大類義語数
             use_llm_naming: LLMによるクラスタ命名を使用するかどうか
 
@@ -395,6 +398,10 @@ class TermClusteringAnalyzer:
                 "cluster_names": {0: "軸受技術", 1: "電動化システム"}
             }
         """
+        # 互換性のための警告
+        if similarity_threshold is not None:
+            logger.warning(f"similarity_threshold={similarity_threshold} is deprecated and ignored. "
+                          "Filtering now uses HDBSCAN clustering + LLM judgment only.")
         logger.info(f"Starting hybrid semantic synonym extraction: {len(specialized_terms)} specialized, {len(candidate_terms)} candidates")
 
         # terms_dataに専門用語を保存（LLM命名用）
@@ -486,35 +493,35 @@ class TermClusteringAnalyzer:
             if not same_cluster_indices:
                 continue
 
-            # コサイン類似度を計算
+            # 類似度計算（記録用のみ、フィルタリングには使用しない）
             term_embedding = normalized_embeddings[idx]
             similarities = []
 
             for other_idx in same_cluster_indices:
                 other_embedding = normalized_embeddings[other_idx]
-                # コサイン類似度（正規化済みなので内積）
+                # コサイン類似度を計算（記録のみ、フィルタリングなし）
                 similarity = float(np.dot(term_embedding, other_embedding))
 
-                if similarity >= similarity_threshold:
-                    other_term = all_terms[other_idx]
-                    other_term_name = other_term['term']
-                    is_specialized = other_idx < spec_count
+                other_term = all_terms[other_idx]
+                other_term_name = other_term['term']
+                is_specialized = other_idx < spec_count
 
-                    # 自分自身は除外
-                    if other_term_name == term_name:
-                        continue
+                # 自分自身は除外
+                if other_term_name == term_name:
+                    continue
 
-                    # 包含関係（related_terms）に含まれる用語は類義語から除外
-                    related_terms = spec_term.get('related_terms', [])
-                    if other_term_name in related_terms:
-                        logger.debug(f"Skipping '{other_term_name}' for '{term_name}': in related_terms (inclusion relationship)")
-                        continue
+                # 包含関係（related_terms）に含まれる用語は類義語から除外
+                related_terms = spec_term.get('related_terms', [])
+                if other_term_name in related_terms:
+                    logger.debug(f"Skipping '{other_term_name}' for '{term_name}': in related_terms (inclusion relationship)")
+                    continue
 
-                    similarities.append({
-                        'term': other_term_name,
-                        'similarity': similarity,
-                        'is_specialized': is_specialized
-                    })
+                # コサイン類似度フィルタを削除: クラスタリング済みなので全て候補に追加
+                similarities.append({
+                    'term': other_term_name,
+                    'similarity': similarity,  # 記録のみ
+                    'is_specialized': is_specialized
+                })
 
             # 全ての類義語候補に対してLLM判定を実行（オプション）
             if use_llm_for_candidates and similarities:
