@@ -27,6 +27,7 @@ from sqlalchemy import create_engine, text
 # Project imports
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from rag.config import Config
+from rag.prompts import get_synonym_judgment_single_definition_prompt, get_synonym_judgment_with_definitions_prompt
 
 # ── ENV ───────────────────────────────────────────
 load_dotenv()
@@ -245,24 +246,9 @@ class TermClusteringAnalyzer:
         Returns:
             True: 類義語, False: 非類義語（包含関係・関連語）
         """
-        from langchain_core.prompts import ChatPromptTemplate
         import json
 
-        prompt_template = ChatPromptTemplate.from_template(
-            "以下の2つの用語が類義語（ほぼ同じ意味を持つ）かどうかを判定してください。\n\n"
-            "専門用語: {spec_term}\n"
-            "定義: {spec_def}\n\n"
-            "候補用語: {candidate_term}\n\n"
-            "判定基準:\n"
-            "- 類義語: ほぼ同じ意味、言い換え、異なる表記\n"
-            "- 非類義語: 包含関係（一方が他方の一部）、上位概念/下位概念、関連語（共起するが意味は異なる）\n\n"
-            "例:\n"
-            "- 類義語: 「コンピュータ」と「コンピューター」\n"
-            "- 非類義語: 「ILIPS」と「ILIPS環境価値管理プラットフォーム」（包含関係）\n"
-            "- 非類義語: 「エンジン」と「ディーゼルエンジン」（上位/下位概念）\n\n"
-            "回答をJSONで返してください:\n"
-            '{{"is_synonym": true/false, "reason": "理由"}}'
-        )
+        prompt_template = get_synonym_judgment_single_definition_prompt()
 
         try:
             response = await llm.ainvoke(
@@ -312,27 +298,9 @@ class TermClusteringAnalyzer:
         Returns:
             True: 類義語, False: 非類義語（包含関係・関連語）
         """
-        from langchain_core.prompts import ChatPromptTemplate
         import json
 
-        prompt_template = ChatPromptTemplate.from_template(
-            "以下の2つの用語が類義語（ほぼ同じ意味を持つ）かどうかを判定してください。\n\n"
-            "用語1: {term1}\n"
-            "定義1: {def1}\n\n"
-            "用語2: {term2}\n"
-            "定義2: {def2}\n\n"
-            "判定基準:\n"
-            "- 類義語: ほぼ同じ意味、言い換え、異なる表記、同じ対象を指す\n"
-            "- 非類義語: 包含関係（一方が他方の一部）、上位概念/下位概念、関連語（共起するが意味は異なる）、異なる種類の技術/手法\n\n"
-            "例:\n"
-            "- 類義語: 「コンピュータ」と「コンピューター」（表記ゆれ）\n"
-            "- 類義語: 「ガス軸受」と「気体軸受」（言い換え）\n"
-            "- 非類義語: 「ILIPS」と「ILIPS環境価値管理プラットフォーム」（包含関係）\n"
-            "- 非類義語: 「ガス軸受」と「磁気軸受」（異なる種類の軸受）\n"
-            "- 非類義語: 「拡散接合プロセス」と「真空ホットプレス」（プロセス全体 vs 装置/手段）\n\n"
-            "回答をJSONで返してください:\n"
-            '{{"is_synonym": true/false, "reason": "理由"}}'
-        )
+        prompt_template = get_synonym_judgment_with_definitions_prompt()
 
         try:
             response = await llm.ainvoke(

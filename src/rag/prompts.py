@@ -304,6 +304,48 @@ SYNONYM_VALIDATION_PROMPT = """以下の用語ペアが類義語（同じ意味�
 
 回答:"""
 
+# Clustering-based synonym judgment prompts
+SYNONYM_JUDGMENT_WITH_DEFINITIONS = """以下の2つの用語が類義語（ほぼ同じ意味を持つ）かどうかを判定してください。
+
+用語1: {term1}
+定義1: {def1}
+
+用語2: {term2}
+定義2: {def2}
+
+判定基準:
+- 類義語: ほぼ同じ意味、言い換え、異なる表記、同じ対象を指す
+- 非類義語: 包含関係（一方が他方の一部）、上位概念/下位概念、関連語（共起するが意味は異なる）、異なる種類の技術/手法
+
+例:
+- 類義語: 「コンピュータ」と「コンピューター」（表記ゆれ）
+- 類義語: 「ガス軸受」と「気体軸受」（言い換え）
+- 非類義語: 「ILIPS」と「ILIPS環境価値管理プラットフォーム」（包含関係）
+- 非類義語: 「ガス軸受」と「磁気軸受」（異なる種類の軸受）
+- 非類義語: 「拡散接合プロセス」と「真空ホットプレス」（プロセス全体 vs 装置/手段）
+
+回答をJSONで返してください:
+{{"is_synonym": true/false, "reason": "理由"}}"""
+
+SYNONYM_JUDGMENT_SINGLE_DEFINITION = """以下の2つの用語が類義語（ほぼ同じ意味を持つ）かどうかを判定してください。
+
+専門用語: {spec_term}
+定義: {spec_def}
+
+候補用語: {candidate_term}
+
+判定基準:
+- 類義語: ほぼ同じ意味、言い換え、異なる表記
+- 非類義語: 包含関係（一方が他方の一部）、上位概念/下位概念、関連語（共起するが意味は異なる）
+
+例:
+- 類義語: 「コンピュータ」と「コンピューター」
+- 非類義語: 「ILIPS」と「ILIPS環境価値管理プラットフォーム」（包含関係）
+- 非類義語: 「エンジン」と「ディーゼルエンジン」（上位/下位概念）
+
+回答をJSONで返してください:
+{{"is_synonym": true/false, "reason": "理由"}}"""
+
 # Term extraction validation prompts
 TERM_EXTRACTION_VALIDATION_SYSTEM_PROMPT = """あなたは専門分野の用語抽出専門家です。
 与えられた候補リストから、真に専門的で重要な用語のみを厳選してください。
@@ -375,3 +417,23 @@ def get_term_extraction_validation_prompt():
         ("system", TERM_EXTRACTION_VALIDATION_SYSTEM_PROMPT),
         ("human", TERM_EXTRACTION_VALIDATION_USER_PROMPT)
     ])
+
+def get_synonym_judgment_with_definitions_prompt():
+    """
+    Get synonym judgment prompt for terms with both definitions.
+    Used in clustering-based synonym extraction.
+
+    Returns:
+        ChatPromptTemplate for synonym judgment with definitions
+    """
+    return ChatPromptTemplate.from_template(SYNONYM_JUDGMENT_WITH_DEFINITIONS)
+
+def get_synonym_judgment_single_definition_prompt():
+    """
+    Get synonym judgment prompt for terms with single definition.
+    Used when candidate term has no definition (legacy support).
+
+    Returns:
+        ChatPromptTemplate for synonym judgment with single definition
+    """
+    return ChatPromptTemplate.from_template(SYNONYM_JUDGMENT_SINGLE_DEFINITION)
