@@ -416,8 +416,8 @@ class TermClusteringAnalyzer:
 
         # 5. HDBSCANクラスタリング
         logger.info("Performing HDBSCAN clustering...")
-        # min_cluster_sizeを動的に調整: データ数の5%以上、最低2
-        min_cluster_size = max(2, int(n_samples * 0.05))
+        # min_cluster_sizeを動的に調整: データ数の3%以上、最低2
+        min_cluster_size = max(2, int(n_samples * 0.03))
         logger.info(f"HDBSCAN min_cluster_size: {min_cluster_size}")
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,
