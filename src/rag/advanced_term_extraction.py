@@ -714,16 +714,18 @@ class AdvancedStatisticalExtractor:
         candidates: List[str],
         full_text: str,
         max_related: int = 5,
-        min_term_length: int = 4
+        min_term_length: int = 4,
+        independent_ratio_threshold: float = 0.3
     ) -> Dict[str, List[str]]:
         """
-        関連語検出（包含関係・PMI共起）
+        関連語検出（包含関係・PMI共起）with C-value based filtering
 
         Args:
             candidates: 候補用語リスト
             full_text: 全文テキスト
             max_related: 1用語あたりの最大関連語数（デフォルト5）
             min_term_length: 関連語として認める最小文字数（デフォルト4）
+            independent_ratio_threshold: 独立出現率の閾値（デフォルト0.3 = 30%）
 
         Returns:
             用語と関連語のマッピング
@@ -733,7 +735,7 @@ class AdvancedStatisticalExtractor:
 
         related = defaultdict(set)
 
-        # 1. 包含関係（上位語/下位語）
+        # 1. 包含関係（上位語/下位語）with C-value filtering
         for i, cand1 in enumerate(valid_candidates):
             # ===== 追加: 極短い部分語はスキップ =====
             if len(cand1) < min_term_length:
@@ -742,11 +744,23 @@ class AdvancedStatisticalExtractor:
                 if cand1 != cand2:
                     # 完全包含（短い方が長い方に含まれる）
                     if cand1 in cand2 and len(cand2) > len(cand1) + 1:
-                        related[cand1].add(cand2)
-                        related[cand2].add(cand1)
+                        # ===== C-value based filtering: 短い方が独立した用語かチェック =====
+                        independent_ratio = self._calculate_independent_occurrence_ratio(
+                            cand1, full_text, valid_candidates
+                        )
+                        # 独立出現率が閾値以上なら有効な関連語として追加
+                        if independent_ratio >= independent_ratio_threshold:
+                            related[cand1].add(cand2)
+                            related[cand2].add(cand1)
                     elif cand2 in cand1 and len(cand1) > len(cand2) + 1:
-                        related[cand2].add(cand1)
-                        related[cand1].add(cand2)
+                        # ===== C-value based filtering: 短い方が独立した用語かチェック =====
+                        independent_ratio = self._calculate_independent_occurrence_ratio(
+                            cand2, full_text, valid_candidates
+                        )
+                        # 独立出現率が閾値以上なら有効な関連語として追加
+                        if independent_ratio >= independent_ratio_threshold:
+                            related[cand2].add(cand1)
+                            related[cand1].add(cand2)
 
         # 2. PMI共起分析（改善版：完全一致のみ）
         cooccurrence_map = defaultdict(lambda: defaultdict(int))
