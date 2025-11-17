@@ -509,6 +509,18 @@ class TermExtractor:
         tfidf_scores = self.statistical_extractor.calculate_tfidf(documents, all_candidates)
         cvalue_scores = self.statistical_extractor.calculate_cvalue(all_candidates, full_text=full_text)
 
+        # 2.5. C-valueベースの部分文字列フィルタリング
+        logger.info("Applying C-value based nested term filtering")
+        all_candidates = self._filter_nested_terms_by_cvalue(
+            all_candidates,
+            cvalue_scores,
+            threshold_ratio=0.3
+        )
+        # TF-IDFとC-valueを再計算（フィルタ後の候補のみ）
+        tfidf_scores = {k: v for k, v in tfidf_scores.items() if k in all_candidates}
+        cvalue_scores = {k: v for k, v in cvalue_scores.items() if k in all_candidates}
+        logger.info(f"Candidates after C-value filtering: {len(all_candidates)}")
+
         # 3. 基底スコア計算（2段階）
         seed_scores = self.statistical_extractor.calculate_combined_scores(
             tfidf_scores, cvalue_scores, stage="seed"  # Stage A: シード選定用（C-value重視）
@@ -517,14 +529,25 @@ class TermExtractor:
             tfidf_scores, cvalue_scores, stage="final"  # Stage B: 最終スコア用（TF-IDF重視）
         )
 
-        # 3.5. 全候補でSemReRank実行（候補数制限を削除）
-        # 以前はMAX_SEMRERANK_CANDIDATES=50に制限していたが、
-        # 計算コストは許容範囲内（+10-15秒）なので全候補で実行
-        candidates_for_semrerank = all_candidates
-        seed_scores_for_semrerank = seed_scores
-        base_scores_for_semrerank = base_scores
+        # 3.5. SemReRank候補の選択（パフォーマンス最適化）
+        # 全候補ではなく上位候補のみ処理してコスト削減
+        MAX_SEMRERANK_CANDIDATES = getattr(self.config, 'max_semrerank_candidates', 1500)
 
-        logger.info(f"Processing {len(all_candidates)} candidates with SemReRank (no limit)")
+        if len(all_candidates) > MAX_SEMRERANK_CANDIDATES:
+            # 基底スコアでソートして上位を選択
+            sorted_candidates = sorted(base_scores.items(), key=lambda x: x[1], reverse=True)
+            top_candidates = dict(sorted_candidates[:MAX_SEMRERANK_CANDIDATES])
+
+            candidates_for_semrerank = {k: all_candidates[k] for k in top_candidates.keys()}
+            seed_scores_for_semrerank = {k: seed_scores[k] for k in top_candidates.keys()}
+            base_scores_for_semrerank = top_candidates
+
+            logger.info(f"Selected top {MAX_SEMRERANK_CANDIDATES} candidates for SemReRank (from {len(all_candidates)} total)")
+        else:
+            candidates_for_semrerank = all_candidates
+            seed_scores_for_semrerank = seed_scores
+            base_scores_for_semrerank = base_scores
+            logger.info(f"Processing all {len(all_candidates)} candidates with SemReRank")
 
         # 3.6. 略語にボーナススコアを付与
         logger.info("Applying abbreviation bonus scores")
@@ -631,42 +654,13 @@ class TermExtractor:
             terms_for_definition = abbreviations + non_abbreviations[:n_candidates]
             logger.info(f"Lightweight filter disabled, using top {definition_percentile}% ({len(terms_for_definition)} terms including {len(abbreviations)} abbreviations)")
 
-        # 8. RAG定義生成
+        # 8. RAG定義生成（バルク処理版）
         if self.vector_store and self.llm:
-            logger.info(f"Generating definitions with RAG for {len(terms_for_definition)} terms")
+            logger.info(f"Bulk generating definitions with RAG for {len(terms_for_definition)} terms")
             try:
-                from .prompts import get_definition_generation_prompt
-                from langchain_core.output_parsers import StrOutputParser
-
-                prompt = get_definition_generation_prompt()
-                chain = prompt | self.llm | StrOutputParser()
-
-                for i, term in enumerate(terms_for_definition, 1):
-                    try:
-                        # 略語の場合、ハイブリッド検索のために拡張クエリを使用
-                        is_abbr = self._is_abbreviation(term.term)
-                        search_query = f"{term.term} 略語" if is_abbr else term.term
-
-                        docs = self.vector_store.similarity_search(search_query, k=5)
-                        if docs:
-                            context = "\n\n".join([doc.page_content for doc in docs])[:3000]
-                            definition = await chain.ainvoke({"term": term.term, "context": context})
-                            term.definition = definition.strip()
-                            logger.info(f"[{i}/{len(terms_for_definition)}] Generated definition for: {term.term}")
-                        else:
-                            # コンテキストが見つからない場合、略語なら仮定義を設定
-                            if is_abbr:
-                                term.definition = f"{term.term}（専門用語の略語）"
-                                logger.info(f"[{i}/{len(terms_for_definition)}] Set placeholder definition for abbreviation: {term.term}")
-                    except Exception as e:
-                        logger.error(f"Failed to generate definition for '{term.term}': {e}")
-                        # エラーの場合も略語なら仮定義を設定
-                        if self._is_abbreviation(term.term):
-                            term.definition = f"{term.term}（専門用語の略語）"
-                        else:
-                            term.definition = ""
+                await self._bulk_generate_definitions(terms_for_definition)
             except Exception as e:
-                logger.error(f"Definition generation failed: {e}")
+                logger.error(f"Bulk definition generation failed: {e}")
         else:
             logger.warning("RAG definition generation skipped (vector_store or llm not available)")
 
@@ -749,6 +743,86 @@ class TermExtractor:
             "candidates": candidates_list
         }
 
+    def _filter_nested_terms_by_cvalue(
+        self,
+        candidates: Dict[str, int],
+        cvalue_scores: Dict[str, float],
+        threshold_ratio: float = 0.3
+    ) -> Dict[str, int]:
+        """
+        C-valueベースの部分文字列フィルタリング
+
+        ネストされた用語（部分文字列）で、独立出現率が低く、C-valueが親用語より
+        著しく低い場合は非独立語として除外する
+
+        Args:
+            candidates: 候補用語と頻度の辞書
+            cvalue_scores: C-valueスコアの辞書
+            threshold_ratio: C-value比率の閾値（デフォルト0.3 = 30%）
+
+        Returns:
+            フィルタリング後の候補用語と頻度の辞書
+        """
+        if not candidates or not cvalue_scores:
+            return candidates
+
+        # 長さ順にソート（長い用語を優先）
+        sorted_terms = sorted(candidates.keys(), key=len, reverse=True)
+
+        # 除外候補を記録
+        terms_to_remove = set()
+
+        for i, longer_term in enumerate(sorted_terms):
+            # 既に除外対象なら スキップ
+            if longer_term in terms_to_remove:
+                continue
+
+            longer_cvalue = cvalue_scores.get(longer_term, 0.0)
+
+            # C-valueが0（既に非独立語判定）なら親候補としてスキップ
+            if longer_cvalue == 0.0:
+                continue
+
+            for shorter_term in sorted_terms[i+1:]:
+                # 既に除外対象ならスキップ
+                if shorter_term in terms_to_remove:
+                    continue
+
+                # 部分文字列チェック
+                if shorter_term not in longer_term:
+                    continue
+
+                # 同一用語はスキップ
+                if shorter_term == longer_term:
+                    continue
+
+                shorter_cvalue = cvalue_scores.get(shorter_term, 0.0)
+
+                # C-value比較: 短い用語のC-valueが長い用語の30%未満なら除外
+                # （短い用語が長い用語の一部としてのみ使われている証拠）
+                if shorter_cvalue < threshold_ratio * longer_cvalue:
+                    terms_to_remove.add(shorter_term)
+                    logger.info(
+                        f"[C-value Filter] 除外: 「{shorter_term}」 "
+                        f"(C-value={shorter_cvalue:.2f}) ⊂ 「{longer_term}」 "
+                        f"(C-value={longer_cvalue:.2f}, 比率={shorter_cvalue/longer_cvalue:.1%})"
+                    )
+
+        # フィルタリング結果
+        filtered = {
+            term: freq
+            for term, freq in candidates.items()
+            if term not in terms_to_remove
+        }
+
+        if terms_to_remove:
+            logger.info(
+                f"[C-value Filter] {len(terms_to_remove)}件の非独立語を除外 "
+                f"({len(candidates)}→{len(filtered)}候補)"
+            )
+
+        return filtered
+
     def _extract_context(self, term: str, text: str, window: int = 100) -> str:
         """
         用語の周辺テキストを抽出
@@ -789,6 +863,118 @@ class TermExtractor:
         # 2-5文字の大文字のみ（BMS、AVR、EMS、SFOC、NOx、CO2など）
         abbreviation_pattern = re.compile(r'^[A-Z]{2,5}[0-9x]?$')
         return bool(abbreviation_pattern.match(term))
+
+    async def _bulk_generate_definitions(self, terms: List) -> None:
+        """
+        RAG定義生成のバルク処理版
+
+        ベクトル検索とLLM呼び出しを並列・バッチ実行して高速化
+
+        Args:
+            terms: ExtractedTermオブジェクトのリスト
+        """
+        from langchain_core.output_parsers import StrOutputParser
+        from .prompts import get_definition_generation_prompt
+
+        if not terms:
+            return
+
+        logger.info(f"Starting bulk definition generation for {len(terms)} terms")
+
+        # ステップ1: 全用語のベクトル検索を並列実行
+        logger.info("Step 1/3: Parallel vector search")
+        search_tasks = []
+        for term in terms:
+            is_abbr = self._is_abbreviation(term.term)
+            search_query = f"{term.term} 略語" if is_abbr else term.term
+            # 同期版similarity_searchを使用（非同期版が無い場合）
+            search_tasks.append((term, search_query))
+
+        # 並列実行（設定ファイルから並列数を取得）
+        max_concurrent = getattr(self.config, 'max_concurrent_llm_requests', 30)
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def search_with_limit(term, query):
+            async with semaphore:
+                try:
+                    # 同期メソッドをasyncioで実行
+                    loop = asyncio.get_event_loop()
+                    docs = await loop.run_in_executor(
+                        None,
+                        lambda: self.vector_store.similarity_search(query, k=5)
+                    )
+                    return docs
+                except Exception as e:
+                    logger.error(f"Vector search failed for '{term.term}': {e}")
+                    return []
+
+        all_docs = await asyncio.gather(
+            *[search_with_limit(term, query) for term, query in search_tasks],
+            return_exceptions=True
+        )
+
+        # ステップ2: コンテキスト準備
+        logger.info("Step 2/3: Preparing contexts")
+        batch_inputs = []
+        valid_terms = []
+
+        for i, (term, docs) in enumerate(zip(terms, all_docs)):
+            if isinstance(docs, Exception) or not docs:
+                # コンテキストなし - 略語なら仮定義
+                if self._is_abbreviation(term.term):
+                    term.definition = f"{term.term}（専門用語の略語）"
+                    logger.info(f"Set placeholder for abbreviation: {term.term}")
+                else:
+                    term.definition = ""
+            else:
+                context = "\n\n".join([doc.page_content for doc in docs])[:3000]
+                batch_inputs.append({"term": term.term, "context": context})
+                valid_terms.append(term)
+
+        if not batch_inputs:
+            logger.warning("No valid contexts found for definition generation")
+            return
+
+        # ステップ3: LLM定義生成をバッチ実行
+        logger.info(f"Step 3/3: Batch LLM definition generation ({len(batch_inputs)} terms)")
+        prompt = get_definition_generation_prompt()
+        chain = prompt | self.llm | StrOutputParser()
+
+        # 設定ファイルから並列数を取得
+        batch_size = getattr(self.config, 'max_concurrent_llm_requests', 30)
+        completed = 0
+
+        for i in range(0, len(batch_inputs), batch_size):
+            batch = batch_inputs[i:i+batch_size]
+            batch_terms = valid_terms[i:i+batch_size]
+
+            try:
+                # バッチ実行
+                definitions = await chain.abatch(batch)
+
+                # 結果を反映
+                for term, definition in zip(batch_terms, definitions):
+                    term.definition = definition.strip() if definition else ""
+                    completed += 1
+
+                logger.info(f"Completed {completed}/{len(batch_inputs)} definitions")
+
+            except Exception as e:
+                logger.error(f"Batch {i//batch_size + 1} failed: {e}. Trying individual fallback...")
+                # フォールバック: 個別処理
+                for j, (input_data, term) in enumerate(zip(batch, batch_terms)):
+                    try:
+                        definition = await chain.ainvoke(input_data)
+                        term.definition = definition.strip() if definition else ""
+                        completed += 1
+                    except Exception as e2:
+                        logger.error(f"Failed for {term.term}: {e2}")
+                        if self._is_abbreviation(term.term):
+                            term.definition = f"{term.term}（専門用語の略語）"
+                        else:
+                            term.definition = ""
+
+        logger.info(f"Bulk definition generation completed: {completed}/{len(terms)} terms")
 
     async def _lightweight_llm_filter(self, terms: List) -> List:
         """
@@ -1015,38 +1201,43 @@ async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, ll
     if terms:
         extractor.save_to_database(terms)
 
-        # HDBSCAN意味ベース類義語抽出
-        logger.info("Starting semantic synonym extraction with HDBSCAN...")
-        try:
-            from ..scripts.extract_semantic_synonyms import (
-                load_specialized_terms,
-                load_candidate_terms_from_extraction,
-                extract_and_save_semantic_synonyms
-            )
+        # HDBSCAN意味ベース類義語抽出（設定で有効化されている場合のみ）
+        enable_hdbscan = getattr(config, 'enable_hdbscan_synonyms', False)
 
-            # 候補用語の読み込み（デバッグファイルから）
-            debug_file = output_json.parent / "term_extraction_debug.json"
-            if debug_file.exists():
-                # 専門用語と候補用語を読み込み
-                specialized_terms = load_specialized_terms(pg_url, jargon_table_name)
-                candidate_terms = load_candidate_terms_from_extraction(debug_file)
+        if enable_hdbscan:
+            logger.info("Starting semantic synonym extraction with HDBSCAN...")
+            try:
+                from ..scripts.extract_semantic_synonyms import (
+                    load_specialized_terms,
+                    load_candidate_terms_from_extraction,
+                    extract_and_save_semantic_synonyms
+                )
 
-                if specialized_terms and candidate_terms:
-                    # 類義語抽出と保存
-                    synonyms_dict = await extract_and_save_semantic_synonyms(
-                        specialized_terms=specialized_terms,
-                        candidate_terms=candidate_terms,
-                        pg_url=pg_url,
-                        jargon_table_name=jargon_table_name,
-                        embeddings=embeddings
-                    )
-                    logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
+                # 候補用語の読み込み（デバッグファイルから）
+                debug_file = output_json.parent / "term_extraction_debug.json"
+                if debug_file.exists():
+                    # 専門用語と候補用語を読み込み
+                    specialized_terms = load_specialized_terms(pg_url, jargon_table_name)
+                    candidate_terms = load_candidate_terms_from_extraction(debug_file)
+
+                    if specialized_terms and candidate_terms:
+                        # 類義語抽出と保存
+                        synonyms_dict = await extract_and_save_semantic_synonyms(
+                            specialized_terms=specialized_terms,
+                            candidate_terms=candidate_terms,
+                            pg_url=pg_url,
+                            jargon_table_name=jargon_table_name,
+                            embeddings=embeddings
+                        )
+                        logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
+                    else:
+                        logger.warning("No specialized or candidate terms found for semantic synonym extraction")
                 else:
-                    logger.warning("No specialized or candidate terms found for semantic synonym extraction")
-            else:
-                logger.warning(f"Debug file not found: {debug_file}")
-        except Exception as e:
-            logger.error(f"Error in semantic synonym extraction: {e}", exc_info=True)
+                    logger.warning(f"Debug file not found: {debug_file}")
+            except Exception as e:
+                logger.error(f"Error in semantic synonym extraction: {e}", exc_info=True)
+        else:
+            logger.info("HDBSCAN semantic synonym extraction is disabled (enable_hdbscan_synonyms=False)")
 
 
 __all__ = [

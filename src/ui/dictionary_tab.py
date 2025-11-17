@@ -10,7 +10,7 @@ from src.rag.term_extraction import JargonDictionaryManager
 from src.rag.config import Config
 from src.utils.helpers import render_term_card
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)  # 60秒→300秒に延長してDB負荷を削減
 def get_all_terms_cached(_jargon_manager):
     return pd.DataFrame(_jargon_manager.get_all_terms())
 
@@ -84,7 +84,7 @@ def render_dictionary_tab(rag_system):
                     ):
                         st.success(f"用語「{new_term}」を登録しました。")
                         get_all_terms_cached.clear()
-                        st.rerun()
+                        # 次回のページ更新時に自動的に反映されます
                     else:
                         st.error(f"用語「{new_term}」の登録に失敗しました。")
     
@@ -102,7 +102,7 @@ def render_dictionary_tab(rag_system):
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 更新", key="refresh_terms", use_container_width=True):
             get_all_terms_cached.clear()
-            st.rerun()
+            st.success("キャッシュをクリアしました。ページを再読み込みしてください。")
 
     # Load term data
     with st.spinner("用語辞書を読み込み中..."):
@@ -192,14 +192,61 @@ def render_dictionary_tab(rag_system):
                         output_path = Path(output_json)
                         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                        with st.spinner("用語抽出中... (SemReRank + 定義生成 + LLM判定)"):
+                        # WebSocketタイムアウト対策: 疑似進捗バーで定期的にハートビート送信
+                        progress_bar = st.progress(0, text="初期化中...")
+                        status_text = st.empty()
+
+                        import threading
+                        import time
+
+                        # 進捗更新用のフラグ
+                        extraction_complete = threading.Event()
+
+                        def update_progress_periodically():
+                            """1分ごとに進捗を更新してWebSocketハートビートを維持"""
+                            steps = [
+                                (10, "📊 チャンク読み込み＆統計処理中..."),
+                                (20, "🔍 候補用語抽出中..."),
+                                (30, "📈 TF-IDF/C-value計算中..."),
+                                (40, "🎯 SemReRank処理中..."),
+                                (50, "📝 定義生成中... (これには数分かかります)"),
+                                (60, "📝 定義生成中... (60%)"),
+                                (70, "📝 定義生成中... (70%)"),
+                                (80, "🔬 LLM専門用語判定中... (80%)"),
+                                (90, "🔬 LLM専門用語判定中... (90%)"),
+                                (95, "📦 結果を保存中..."),
+                            ]
+
+                            for percent, message in steps:
+                                if extraction_complete.is_set():
+                                    break
+                                progress_bar.progress(percent / 100, text=message)
+                                status_text.info(f"⏳ 処理中: {message}")
+                                time.sleep(60)  # 1分待機（WebSocketハートビート維持）
+
+                        try:
+                            # バックグラウンドで進捗更新を開始
+                            progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
+                            progress_thread.start()
+
+                            # 実際の用語抽出処理を実行
                             asyncio.run(rag_system.extract_terms(input_path, str(output_path)))
+
+                            # 処理完了を通知
+                            extraction_complete.set()
+                            progress_bar.progress(1.0, text="✅ 完了！")
+
+                        finally:
+                            extraction_complete.set()
+                            time.sleep(0.5)  # 最後の進捗表示を確認
+                            progress_bar.empty()
+                            status_text.empty()
 
                         st.session_state['term_extraction_output'] = str(output_path)
                         st.success(f"✅ 用語辞書を生成しました → {output_path}")
                         st.balloons()
                         get_all_terms_cached.clear()
-                        st.rerun()
+                        # 次回のページ更新時に自動的に反映されます
                 else:
                     if not uploaded_files:
                         st.error("抽出するファイルをアップロードしてください。")
@@ -214,14 +261,61 @@ def render_dictionary_tab(rag_system):
                         output_path = Path(output_json)
                         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                        with st.spinner("用語抽出中... (SemReRank + 定義生成 + LLM判定)"):
+                        # WebSocketタイムアウト対策: 疑似進捗バーで定期的にハートビート送信
+                        progress_bar = st.progress(0, text="初期化中...")
+                        status_text = st.empty()
+
+                        import threading
+                        import time
+
+                        # 進捗更新用のフラグ
+                        extraction_complete = threading.Event()
+
+                        def update_progress_periodically():
+                            """1分ごとに進捗を更新してWebSocketハートビートを維持"""
+                            steps = [
+                                (10, "📊 チャンク読み込み＆統計処理中..."),
+                                (20, "🔍 候補用語抽出中..."),
+                                (30, "📈 TF-IDF/C-value計算中..."),
+                                (40, "🎯 SemReRank処理中..."),
+                                (50, "📝 定義生成中... (これには数分かかります)"),
+                                (60, "📝 定義生成中... (60%)"),
+                                (70, "📝 定義生成中... (70%)"),
+                                (80, "🔬 LLM専門用語判定中... (80%)"),
+                                (90, "🔬 LLM専門用語判定中... (90%)"),
+                                (95, "📦 結果を保存中..."),
+                            ]
+
+                            for percent, message in steps:
+                                if extraction_complete.is_set():
+                                    break
+                                progress_bar.progress(percent / 100, text=message)
+                                status_text.info(f"⏳ 処理中: {message}")
+                                time.sleep(60)  # 1分待機（WebSocketハートビート維持）
+
+                        try:
+                            # バックグラウンドで進捗更新を開始
+                            progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
+                            progress_thread.start()
+
+                            # 実際の用語抽出処理を実行
                             asyncio.run(rag_system.extract_terms(input_path, str(output_path)))
+
+                            # 処理完了を通知
+                            extraction_complete.set()
+                            progress_bar.progress(1.0, text="✅ 完了！")
+
+                        finally:
+                            extraction_complete.set()
+                            time.sleep(0.5)  # 最後の進捗表示を確認
+                            progress_bar.empty()
+                            status_text.empty()
 
                         st.session_state['term_extraction_output'] = str(output_path)
                         st.success(f"✅ 用語辞書を生成しました → {output_path}")
                         st.balloons()
                         get_all_terms_cached.clear()
-                        st.rerun()
+                        # 次回のページ更新時に自動的に反映されます
 
             except Exception as e:
                 st.error(f"用語抽出エラー: {e}")
@@ -392,15 +486,15 @@ def render_dictionary_tab(rag_system):
                 if deleted:
                     st.success(f"用語「{row['term']}」を削除しました。")
                     get_all_terms_cached.clear()
-                    st.rerun()
+                    # 次回のページ更新時に自動的に反映されます
                 else:
                     st.error(f"用語「{row['term']}」の削除に失敗しました。")
 
-    else: # テーブル形式
+    else: # テーブル形式（仮想スクロール対応）
         display_df = terms_df.copy()
         display_df['aliases'] = display_df['aliases'].apply(lambda x: ', '.join(x) if x else '')
         display_df['related_terms'] = display_df['related_terms'].apply(lambda x: ', '.join(x) if x else '')
-        
+
         # カラム名を日本語に
         column_mapping = {
             'term': '用語', 'definition': '定義', 'domain': '分野',
@@ -415,16 +509,22 @@ def render_dictionary_tab(rag_system):
         # 削除ボタン用の列を追加
         display_df['削除'] = False
 
+        # 仮想スクロール対応: 固定高さで大量データでも高速
         edited_df = st.data_editor(
             display_df[['用語', '定義', '分野', '類義語', '関連語', '更新日時', '削除']],
             use_container_width=True,
             hide_index=True,
-            height=min(600, (len(display_df) + 1) * 35 + 3),
+            height=600,  # 固定高さで仮想スクロール有効化
             column_config={
                 "削除": st.column_config.CheckboxColumn(
                     "削除",
                     default=False,
-                )
+                ),
+                "用語": st.column_config.TextColumn("用語", width="medium"),
+                "定義": st.column_config.TextColumn("定義", width="large"),
+                "分野": st.column_config.TextColumn("分野", width="small"),
+                "類義語": st.column_config.TextColumn("類義語", width="medium"),
+                "関連語": st.column_config.TextColumn("関連語", width="medium"),
             },
             key="dictionary_editor"
         )
@@ -439,7 +539,7 @@ def render_dictionary_tab(rag_system):
                 if error_count:
                     st.warning(f"{error_count}件の削除に失敗しました。")
                 get_all_terms_cached.clear()
-                st.rerun()
+                # 次回のページ更新時に自動的に反映されます
 
     # CSV download
     st.markdown("---")
@@ -452,7 +552,7 @@ def render_dictionary_tab(rag_system):
             if error_count:
                 st.warning(f"{error_count}件の削除に失敗しました。", icon="⚠️")
             get_all_terms_cached.clear()
-            st.rerun()
+            # 次回のページ更新時に自動的に反映されます
     csv = terms_df.to_csv(index=False)
     st.download_button(
         label="📥 表示中の用語をCSVでダウンロード",
