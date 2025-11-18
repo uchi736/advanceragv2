@@ -47,9 +47,9 @@ embeddings = AzureOpenAIEmbeddings(
     api_key=cfg.azure_openai_api_key
 )
 
-# Azure OpenAI LLM for naming
+# Azure OpenAI LLM for naming (4.1-mini使用)
 llm = AzureChatOpenAI(
-    azure_deployment=cfg.azure_openai_chat_deployment_name,
+    azure_deployment=cfg.azure_openai_chat_mini_deployment_name,
     api_version=cfg.azure_openai_api_version,
     azure_endpoint=cfg.azure_openai_endpoint,
     api_key=cfg.azure_openai_api_key,
@@ -279,6 +279,84 @@ class TermClusteringAnalyzer:
             # エラー時は保守的に類義語と判定（偽陰性を避ける）
             return True
 
+    async def llm_judge_synonyms_bulk(
+        self,
+        term: str,
+        definition: str,
+        candidates: List[Dict[str, Any]],
+        specialized_terms: List[Dict[str, Any]],
+        spec_count: int
+    ) -> List[int]:
+        """
+        LLMで1つの専門用語に対して複数の候補用語をまとめて類義語判定（バルク処理）
+
+        Args:
+            term: 専門用語
+            definition: 専門用語の定義
+            candidates: 候補用語リスト [{"term": "候補1", "similarity": 0.9, "is_specialized": True}]
+            specialized_terms: 全専門用語リスト（定義取得用）
+            spec_count: 専門用語の数
+
+        Returns:
+            類義語と判定された候補のインデックスリスト [0, 2, 5]
+        """
+        import json
+        import re
+
+        # 候補リストを番号付きで作成
+        candidate_list = []
+        for i, cand in enumerate(candidates):
+            cand_term = cand['term']
+            is_specialized = cand.get('is_specialized', False)
+
+            # 定義取得
+            if is_specialized:
+                cand_def = next(
+                    (t.get('definition', '') for t in specialized_terms if t['term'] == cand_term),
+                    ''
+                )
+            else:
+                # 候補用語は定義なし
+                cand_def = ''
+
+            cand_def_str = cand_def if cand_def else "（定義なし）"
+            candidate_list.append(f"{i+1}. {cand_term}: {cand_def_str}")
+
+        candidates_text = "\n".join(candidate_list)
+
+        prompt = f"""専門用語: {term}
+定義: {definition or "（定義なし）"}
+
+以下の候補用語の中で、上記の専門用語の類義語を全て選んでください。
+類義語とは、ほぼ同じ意味を持つ用語です。包含関係や関連語は除外してください。
+
+候補用語:
+{candidates_text}
+
+類義語の番号のみをカンマ区切りで返してください（例: 1,3,5）
+類義語がない場合は「なし」と返してください。
+番号以外の説明は不要です。"""
+
+        try:
+            response = await llm.ainvoke(prompt)
+            content = response.content.strip()
+
+            # パース処理
+            if content in ["なし", "無し", "None", "none", ""]:
+                return []
+
+            # 番号を抽出（カンマ区切りまたはスペース区切り）
+            numbers = re.findall(r'\d+', content)
+            synonym_indices = [int(num) - 1 for num in numbers if 0 < int(num) <= len(candidates)]
+
+            logger.debug(f"LLM判定（バルク）: '{term}' → {len(synonym_indices)}/{len(candidates)}件が類義語")
+            return synonym_indices
+
+        except Exception as e:
+            logger.warning(f"LLMバルク判定失敗 '{term}': {e}")
+            # エラー時は空リスト（保守的に類義語なしとする）
+            return []
+
     async def llm_judge_synonym_with_definitions(
         self,
         term1: str,
@@ -288,6 +366,7 @@ class TermClusteringAnalyzer:
     ) -> bool:
         """
         LLMで2つの用語が類義語かどうかを判定（両方の定義あり）
+        ※この関数は後方互換性のために残すが、バルク処理の方が効率的
 
         Args:
             term1: 用語1
@@ -439,6 +518,11 @@ class TermClusteringAnalyzer:
         cluster_mapping = {}  # term -> cluster_id のマッピング
         spec_count = len(specialized_terms)
 
+        # 全専門用語の類義語候補を一度に収集（バルク処理用）
+        all_llm_tasks = []
+        all_task_metadata = []
+        term_to_candidates = {}  # term_name -> [(sim_item, task_idx), ...]
+
         for idx in range(spec_count):
             spec_term = specialized_terms[idx]
             term_name = spec_term['term']
@@ -491,76 +575,53 @@ class TermClusteringAnalyzer:
                     'is_specialized': is_specialized
                 })
 
-            # 全ての類義語候補に対してLLM判定を実行（オプション）
+            # LLM判定用タスクを収集（バルク判定: 1専門用語につき1タスク）
             if use_llm_for_candidates and similarities:
-                logger.debug(f"Applying LLM judgment for {len(similarities)} synonym candidates of '{term_name}'")
                 spec_def = spec_term.get('definition', '')
 
-                # タスクリストとメタデータを準備（並列実行用）
-                tasks = []
-                task_metadata = []
+                # 全候補をまとめて1回のLLM呼び出しで判定するタスクを作成
+                task = self.llm_judge_synonyms_bulk(
+                    term_name,
+                    spec_def,
+                    similarities,
+                    specialized_terms,
+                    spec_count
+                )
+                all_llm_tasks.append(task)
+                all_task_metadata.append((term_name, similarities))
 
-                for sim_item in similarities:
-                    candidate_term = sim_item['term']
-                    is_specialized = sim_item['is_specialized']
+        # 全LLM判定を並列実行（1専門用語につき1タスク = 27タスク程度）
+        if use_llm_for_candidates and all_llm_tasks:
+            import asyncio
+            logger.info(f"Running bulk LLM judgment: {len(all_llm_tasks)} total tasks (1 task per specialized term)")
 
-                    # 専門用語同士の場合、候補用語の定義も取得
-                    if is_specialized:
-                        # specialized_termsから定義を検索
-                        candidate_def = next(
-                            (t.get('definition', '') for t in specialized_terms if t['term'] == candidate_term),
-                            ''
-                        )
-                    else:
-                        # 候補用語の場合、定義はLLM生成済み（textフィールドから抽出）
-                        candidate_obj = next(
-                            (t for t in all_terms[spec_count:] if t['term'] == candidate_term),
-                            None
-                        )
-                        if candidate_obj:
-                            # "term: definition"形式から定義を抽出
-                            text = candidate_obj.get('text', '')
-                            candidate_def = text.split(':', 1)[1].strip() if ':' in text else ''
-                        else:
-                            candidate_def = ''
+            # 全タスクを並列実行（タスク数が少ないのでバッチ分割不要）
+            results = await asyncio.gather(*all_llm_tasks, return_exceptions=True)
 
-                    # LLM判定タスクを作成（並列実行）
-                    task = self.llm_judge_synonym_with_definitions(
-                        term_name,
-                        spec_def,
-                        candidate_term,
-                        candidate_def
-                    )
-                    tasks.append(task)
-                    task_metadata.append(sim_item)
+            # 結果を各専門用語に振り分け
+            for (term_name, similarities), result in zip(all_task_metadata, results):
+                if isinstance(result, Exception):
+                    logger.warning(f"LLM bulk judgment failed for '{term_name}': {result}")
+                    term_to_candidates[term_name] = []
+                    continue
 
-                # asyncio.gatherで並列実行（例外処理付き）
-                import asyncio
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # resultは類義語と判定された候補のインデックスリスト
+                synonym_indices = result
+                llm_filtered_similarities = [similarities[idx] for idx in synonym_indices if idx < len(similarities)]
 
-                # 結果をフィルタリング
-                llm_filtered_similarities = []
-                for sim_item, result in zip(task_metadata, results):
-                    if isinstance(result, Exception):
-                        logger.warning(f"LLM judgment failed for '{sim_item['term']}': {result}")
-                        continue
+                # 結果を保存（後でmax_synonyms適用）
+                term_to_candidates[term_name] = llm_filtered_similarities
+                logger.debug(f"After LLM filtering for '{term_name}': {len(llm_filtered_similarities)}/{len(similarities)} synonyms remain")
 
-                    is_synonym = result
-                    if is_synonym:
-                        llm_filtered_similarities.append(sim_item)
-                    else:
-                        logger.debug(f"LLM rejected '{sim_item['term']}' as synonym of '{term_name}'")
-
-                similarities = llm_filtered_similarities
-                logger.debug(f"After LLM filtering: {len(similarities)} synonyms remain")
-
+        # LLM判定結果をsynonyms_dictに反映
+        for term_name, filtered_similarities in term_to_candidates.items():
             # 類似度順にソート
-            similarities.sort(key=lambda x: x['similarity'], reverse=True)
+            filtered_similarities.sort(key=lambda x: x['similarity'], reverse=True)
 
             # 上位N個のみ保存
-            if similarities:
-                synonyms_dict[term_name] = similarities[:max_synonyms]
-                logger.debug(f"Found {len(similarities[:max_synonyms])} synonyms for '{term_name}'")
+            if filtered_similarities:
+                synonyms_dict[term_name] = filtered_similarities[:max_synonyms]
+                logger.debug(f"Found {len(filtered_similarities[:max_synonyms])} synonyms for '{term_name}'")
 
         logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
         logger.info(f"Mapped {len(cluster_mapping)} terms to clusters")

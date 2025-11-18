@@ -41,9 +41,8 @@ def render_documents_tab(rag_system):
                 rag_system.ingest_documents(paths_to_ingest)
                 progress_bar.progress(1.0, text="インジェスト完了！")
                 st.success(f"✅ {len(uploaded_docs)}個のファイルが正常に処理されました！")
-                time.sleep(1)
                 st.balloons()
-                st.rerun()
+                # 次回のページ更新時に自動的に反映されます
             except Exception as e:
                 st.error(f"ドキュメント処理中にエラーが発生しました: {type(e).__name__} - {e}")
             finally:
@@ -52,62 +51,60 @@ def render_documents_tab(rag_system):
 
     st.markdown("### 📚 登録済みドキュメント")
     docs_df = get_documents_dataframe(rag_system)
-    
-    if 'doc_to_show_chunks' not in st.session_state:
-        st.session_state.doc_to_show_chunks = None
 
     if not docs_df.empty:
-        # Display header
-        header_cols = st.columns([3, 1, 2, 2])
-        header_cols[0].markdown("**Document ID**")
-        header_cols[1].markdown("**Chunks**")
-        header_cols[2].markdown("**Last Updated**")
-        header_cols[3].markdown("**Actions**")
+        # 仮想スクロール対応: st.dataframeで表示（大量データでも高速）
+        st.dataframe(
+            docs_df,
+            use_container_width=True,
+            height=min(600, len(docs_df) * 35 + 38),  # 最大600pxに制限
+            hide_index=True,
+            column_config={
+                "Document ID": st.column_config.TextColumn("Document ID", width="large"),
+                "Chunks": st.column_config.NumberColumn("Chunks", width="small"),
+                "Last Updated": st.column_config.TextColumn("Last Updated", width="medium"),
+            }
+        )
 
-        for index, row in docs_df.iterrows():
-            doc_id = row["Document ID"]
-            cols = st.columns([3, 1, 2, 2])
-            cols[0].markdown(f'<span style="color: #FAFAFA;">{doc_id}</span>', unsafe_allow_html=True)
-            cols[1].markdown(f'<span style="color: #FAFAFA;">{row["Chunks"]}</span>', unsafe_allow_html=True)
-            cols[2].markdown(f'<span style="color: #FAFAFA;">{row["Last Updated"]}</span>', unsafe_allow_html=True)
-            
-            if cols[3].button("チャンク表示/非表示", key=f"toggle_chunks_{doc_id}"):
-                if st.session_state.doc_to_show_chunks == doc_id:
-                    st.session_state.doc_to_show_chunks = None # Hide if already shown
-                else:
-                    st.session_state.doc_to_show_chunks = doc_id # Show this one
-            
-            if st.session_state.doc_to_show_chunks == doc_id:
-                with st.spinner(f"'{doc_id}'のチャンクを取得中..."):
-                    chunks_df = rag_system.get_chunks_by_document_id(doc_id)
-                
-                if not chunks_df.empty:
-                    st.info(f"{len(chunks_df)}個のチャンクが見つかりました。")
-                    
-                    csv = chunks_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="💾 全チャンクをCSVでダウンロード",
-                        data=csv,
-                        file_name=f"chunks_{doc_id}.csv",
-                        mime="text/csv",
-                        key=f"download_chunks_{doc_id}"
-                    )
-                    
-                    for _, chunk_row in chunks_df.iterrows():
-                        st.markdown("---")
-                        st.markdown(f"**Chunk ID:** `{chunk_row['chunk_id']}`")
-                        
-                        # Use a markdown container with custom CSS for better readability and scrolling
-                        st.markdown(
-                            f"""
-                            <div style="background-color: #262730; border-radius: 0.5rem; padding: 10px; height: 200px; overflow-y: auto; border: 1px solid #333;">
-                                <pre style="white-space: pre-wrap; word-wrap: break-word; color: #FAFAFA;">{chunk_row['content']}</pre>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                else:
-                    st.warning("このドキュメントにはチャンクデータが見つかりませんでした。")
+        # チャンク表示は別セクションに分離
+        st.markdown("---")
+        st.markdown("### 🔍 チャンク詳細表示")
+        doc_ids_for_viewing = ["選択してください..."] + docs_df["Document ID"].tolist()
+        selected_doc_for_chunks = st.selectbox(
+            "ドキュメントを選択してチャンクを表示:",
+            doc_ids_for_viewing,
+            key="doc_chunk_viewer_select"
+        )
+
+        if selected_doc_for_chunks != "選択してください...":
+            with st.spinner(f"'{selected_doc_for_chunks}'のチャンクを取得中..."):
+                chunks_df = rag_system.get_chunks_by_document_id(selected_doc_for_chunks)
+
+            if not chunks_df.empty:
+                st.info(f"{len(chunks_df)}個のチャンクが見つかりました。")
+
+                csv = chunks_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="💾 全チャンクをCSVでダウンロード",
+                    data=csv,
+                    file_name=f"chunks_{selected_doc_for_chunks}.csv",
+                    mime="text/csv",
+                    key=f"download_chunks_{selected_doc_for_chunks}"
+                )
+
+                # チャンクもdataframeで表示（仮想スクロール有効）
+                st.dataframe(
+                    chunks_df,
+                    use_container_width=True,
+                    height=400,
+                    hide_index=True,
+                    column_config={
+                        "chunk_id": st.column_config.TextColumn("Chunk ID", width="medium"),
+                        "content": st.column_config.TextColumn("Content", width="large"),
+                    }
+                )
+            else:
+                st.warning("このドキュメントにはチャンクデータが見つかりませんでした。")
         
         st.markdown("---")
         st.markdown("### 🗑️ ドキュメント削除")
@@ -126,8 +123,7 @@ def render_documents_tab(rag_system):
                         success, message = rag_system.delete_document_by_id(doc_to_delete)
                     if success:
                         st.success(message)
-                        time.sleep(1)
-                        st.rerun()
+                        # 次回のページ更新時に自動的に反映されます
                     else:
                         st.error(message)
                 except Exception as e:

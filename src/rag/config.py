@@ -22,6 +22,7 @@ class Config:
     azure_openai_endpoint: Optional[str] = None
     azure_openai_api_version: str = ""
     azure_openai_chat_deployment_name: Optional[str] = None
+    azure_openai_chat_mini_deployment_name: Optional[str] = None  # 4o-mini/4.1-mini用
     azure_openai_embedding_deployment_name: Optional[str] = None
 
     # LLM settings (populated in __post_init__)
@@ -59,6 +60,7 @@ class Config:
         self.azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
         self.azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
         self.azure_openai_chat_deployment_name = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+        self.azure_openai_chat_mini_deployment_name = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")  # 4.1-mini使用
         self.azure_openai_embedding_deployment_name = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
 
         # LLM settings
@@ -114,9 +116,16 @@ class Config:
     semrerank_relmin: float = 0.5
     semrerank_reltop: float = 0.15
     semrerank_alpha: float = 0.85
+    max_semrerank_candidates: int = 1500  # パフォーマンス最適化: SemReRank候補数の上限
     definition_generation_percentile: float = 50.0
     enable_lightweight_filter: bool = True
-    llm_filter_batch_size: int = 10
+    llm_filter_batch_size: int = 50  # パフォーマンス最適化: 10→50に拡大
+
+    # LLM並列処理設定（TPM/RPM制限対策）
+    max_concurrent_llm_requests: int = 30  # Azure OpenAI: 30, オンプレ: GPU数に応じて調整
+
+    # HDBSCAN類義語抽出設定（パフォーマンス最適化）
+    enable_hdbscan_synonyms: bool = True  # HDBSCAN類義語抽出を有効化（バルク並列処理で高速化済み）
 
     # Term extraction quality settings
     use_sentence_boundary_for_ngrams: bool = True

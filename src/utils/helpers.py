@@ -182,7 +182,7 @@ def render_sql_result_in_chat(sql_details_dict: Dict[str, Any]):
         with st.expander("📊 SQL実行結果プレビュー (チャット内)", expanded=False):
             st.info("SQLクエリは成功しましたが、該当するデータはありませんでした。")
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)  # 60秒→300秒に延長してDB負荷を削減
 def load_terms_from_db(pg_url: str, jargon_table_name: str, keyword: str = "") -> pd.DataFrame:
     """PostgreSQLから用語辞書を読み込む"""
     if not pg_url:

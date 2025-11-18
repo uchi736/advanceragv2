@@ -120,7 +120,7 @@ async def generate_definitions_for_candidates(
     llm
 ) -> List[Dict[str, Any]]:
     """
-    候補用語にLLMで定義を生成（Option B: F1=83.3%）
+    候補用語にLLMで定義を生成（バルク処理: 1リクエストで複数用語）
 
     Args:
         candidate_terms: 候補用語リスト [{"term": "...", "text": "..."}]
@@ -129,33 +129,85 @@ async def generate_definitions_for_candidates(
     Returns:
         定義付き候補用語リスト [{"term": "...", "text": "用語: 定義"}]
     """
-    from langchain_core.prompts import ChatPromptTemplate
+    import asyncio
+    import re
 
-    logger.info(f"Generating definitions for {len(candidate_terms)} candidate terms...")
+    logger.info(f"Generating definitions for {len(candidate_terms)} candidate terms with bulk processing...")
+
+    # バルクプロンプトテンプレート（1リクエストで複数用語）
+    def create_bulk_prompt(terms: List[str]) -> str:
+        term_list = "\n".join([f"{i+1}. {term}" for i, term in enumerate(terms)])
+        return f"""以下の{len(terms)}個の専門用語の定義を生成してください。
+各定義は1-2文（40-50文字）で、技術的文脈や関連概念を含めてください。
+
+用語リスト:
+{term_list}
+
+以下の形式で必ず回答してください:
+1. 用語1: 定義1
+2. 用語2: 定義2
+3. 用語3: 定義3
+..."""
+
+    # レスポンスパース関数
+    def parse_bulk_response(response_text: str, expected_terms: List[str]) -> Dict[str, str]:
+        definitions = {}
+        lines = response_text.strip().split('\n')
+
+        for line in lines:
+            # "番号. 用語: 定義" 形式をパース
+            match = re.match(r'^\d+\.\s*(.+?):\s*(.+)$', line.strip())
+            if match:
+                term, definition = match.groups()
+                term_clean = term.strip()
+                # 期待される用語リストと照合
+                for expected_term in expected_terms:
+                    if expected_term in term_clean or term_clean in expected_term:
+                        definitions[expected_term] = definition.strip()
+                        break
+
+        return definitions
+
+    # バッチ処理（1リクエストで15用語ずつ）
+    bulk_batch_size = 15  # トークン制限とのバランス
     enriched = []
 
-    prompt_template = ChatPromptTemplate.from_template(
-        "以下の専門用語の定義を1-2文（40-50文字）で生成してください。"
-        "技術的文脈や関連概念を含めてください。\n\n"
-        "用語: {term}\n\n"
-        "定義のみを返してください:"
-    )
+    for i in range(0, len(candidate_terms), bulk_batch_size):
+        batch = candidate_terms[i:i+bulk_batch_size]
+        terms = [cand['term'] for cand in batch]
 
-    for cand in candidate_terms:
-        term = cand['term']
+        logger.debug(f"Processing bulk batch {i//bulk_batch_size + 1}/{(len(candidate_terms) + bulk_batch_size - 1)//bulk_batch_size} ({len(terms)} terms)")
 
         try:
-            response = await llm.ainvoke(prompt_template.format(term=term))
-            definition = response.content.strip()
-            text = f"{term}: {definition}"
-            logger.debug(f"Generated definition for '{term}': {definition[:50]}...")
+            # 1リクエストで複数用語の定義を生成
+            prompt = create_bulk_prompt(terms)
+            response = await llm.ainvoke(prompt)
+
+            # レスポンスをパース
+            definitions = parse_bulk_response(response.content, terms)
+
+            # 結果をマージ
+            for cand in batch:
+                term = cand['term']
+                if term in definitions:
+                    definition = definitions[term]
+                    text = f"{term}: {definition}"
+                    logger.debug(f"Generated definition for '{term}': {definition[:50]}...")
+                else:
+                    # パース失敗時のフォールバック
+                    logger.warning(f"Failed to parse definition for '{term}', using fallback")
+                    text = cand.get('text', term)
+
+                enriched.append({"term": term, "text": text})
+
         except Exception as e:
-            logger.warning(f"Failed to generate definition for '{term}': {e}")
-            text = cand.get('text', term)  # フォールバック
+            logger.warning(f"Bulk definition generation failed for batch {i//bulk_batch_size + 1}: {e}")
+            # エラー時は全てフォールバック
+            for cand in batch:
+                text = cand.get('text', cand['term'])
+                enriched.append({"term": cand['term'], "text": text})
 
-        enriched.append({"term": term, "text": text})
-
-    logger.info(f"Successfully generated {len(enriched)} definitions")
+    logger.info(f"Successfully generated {len(enriched)} definitions (bulk processing)")
     return enriched
 
 
@@ -189,27 +241,28 @@ async def extract_and_save_semantic_synonyms(
     cfg = Config()
 
     llm = AzureChatOpenAI(
-        azure_deployment=cfg.azure_openai_chat_deployment_name,
+        azure_deployment=cfg.azure_openai_chat_mini_deployment_name,  # 4.1-mini使用
         api_version=cfg.azure_openai_api_version,
         openai_api_key=cfg.azure_openai_api_key,
         temperature=0
     )
 
-    # 候補用語にLLMで定義を生成（Option B: F1=83.3%）
-    logger.info("\n[Step 1.5] Generating definitions for candidate terms...")
-    enriched_candidates = await generate_definitions_for_candidates(candidate_terms, llm)
-    logger.info(f"Generated definitions for {len(enriched_candidates)} candidates")
+    # 候補用語は用語名のみで使用（定義生成をスキップしてパフォーマンス向上）
+    logger.info("\n[Step 1.5] Skipping definition generation for candidate terms (performance optimization)")
+    logger.info("Using term names only - embedding model can understand meaning from term names alone")
+    enriched_candidates = candidate_terms  # 用語名のみで使用（定義なし）
+    logger.info(f"Using {len(enriched_candidates)} candidates without additional definition generation")
 
     analyzer = TermClusteringAnalyzer(pg_url, min_terms=3, jargon_table_name=jargon_table_name, embeddings=embeddings)
 
     try:
         result = await analyzer.extract_semantic_synonyms_hybrid(
             specialized_terms=specialized_terms,
-            candidate_terms=enriched_candidates,  # LLM定義付き候補用語を使用
+            candidate_terms=enriched_candidates,  # 定義付き候補用語を使用
             # similarity_threshold: 削除（クラスタリング+LLM判定のみ使用）
             max_synonyms=10,
             use_llm_naming=True,  # LLMによるクラスタ命名を有効化
-            use_llm_for_candidates=True  # 候補用語に対してLLM類義語判定を有効化
+            use_llm_for_candidates=True  # LLM判定を有効化（バッチ並列処理で高速化済み）
         )
 
         # 結果から類義語辞書、クラスタマッピング、クラスタ名を取得
@@ -252,6 +305,11 @@ async def main():
     if len(candidate_terms) == 0:
         logger.warning("No candidate terms found. Using only specialized terms.")
         candidate_terms = []
+
+    # パフォーマンス最適化: 候補用語を上位150件に制限
+    if len(candidate_terms) > 150:
+        logger.info(f"Limiting candidate terms from {len(candidate_terms)} to 150 (performance optimization)")
+        candidate_terms = candidate_terms[:150]
 
     # 3. TermClusteringAnalyzerで類義語抽出
     logger.info(f"\n[Step 3] Extracting semantic synonyms...")
