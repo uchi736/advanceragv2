@@ -328,7 +328,15 @@ class TermClusteringAnalyzer:
 定義: {definition or "（定義なし）"}
 
 以下の候補用語の中で、上記の専門用語の類義語を全て選んでください。
-類義語とは、ほぼ同じ意味を持つ用語です。包含関係や関連語は除外してください。
+
+【類義語の判定基準】
+- ほぼ同じ意味を持つ用語（同義語）
+- 括弧書きで示される別名表記（例: 「ガス軸受（空気軸受）」の場合、「空気軸受」は類義語）
+- 異なる呼び方だが実質的に同じものを指す用語
+
+【除外する用語】
+- 包含関係（一方が他方の一部や上位概念）
+- 関連語（関連はあるが同じものではない）
 
 候補用語:
 {candidates_text}
@@ -513,10 +521,32 @@ class TermClusteringAnalyzer:
         n_noise = sum(1 for c in clusters if c == -1)
         logger.info(f"Clustering complete: {n_clusters} clusters, {n_noise} noise points")
 
+        # クラスタリング結果の詳細ログを出力
+        logger.info("\n" + "="*60)
+        logger.info("Clustering Details:")
+        logger.info("="*60)
+        spec_count = len(specialized_terms)
+
+        # 専門用語のクラスタ配置を表示
+        for cluster_id in sorted(set(clusters)):
+            cluster_terms = []
+            for idx, c_id in enumerate(clusters):
+                if c_id == cluster_id:
+                    term_obj = all_terms[idx]
+                    term_name = term_obj['term']
+                    is_spec = idx < spec_count
+                    marker = "★" if is_spec else "○"
+                    cluster_terms.append(f"{marker}{term_name}")
+
+            cluster_label = f"Cluster {cluster_id}" if cluster_id >= 0 else "Noise"
+            logger.info(f"\n{cluster_label} ({len(cluster_terms)} terms):")
+            logger.info("  " + ", ".join(cluster_terms))
+
+        logger.info("\n" + "="*60)
+
         # 6. 専門用語ごとに類義語抽出とクラスタマッピング
         synonyms_dict = {}
         cluster_mapping = {}  # term -> cluster_id のマッピング
-        spec_count = len(specialized_terms)
 
         # 全専門用語の類義語候補を一度に収集（バルク処理用）
         all_llm_tasks = []
