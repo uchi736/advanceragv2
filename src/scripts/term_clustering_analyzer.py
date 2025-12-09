@@ -670,6 +670,12 @@ class TermClusteringAnalyzer:
         logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
         logger.info(f"Mapped {len(cluster_mapping)} terms to clusters")
 
+        # cluster_mappingの詳細ログ
+        logger.info("Cluster mapping details:")
+        for term, cid in sorted(cluster_mapping.items()):
+            cluster_label = f"Cluster {cid}" if cid >= 0 else "Noise"
+            logger.info(f"  {term} → {cluster_label}")
+
         # LLMによるクラスタ命名（オプション）
         cluster_names = {}
         if use_llm_naming:
@@ -807,6 +813,8 @@ class TermClusteringAnalyzer:
         bidirectional_synonyms = self._ensure_bidirectional_synonyms(synonyms_dict)
 
         with engine.begin() as conn:
+            logger.info(f"🔄 Starting UPDATE loop for {len(cluster_mapping)} terms...")
+
             # cluster_mappingの全用語をループ（類義語なしでもdomain更新）
             for term, cluster_id in cluster_mapping.items():
                 # 1. 類義語を取得（双方向性保証済み）
@@ -854,7 +862,7 @@ class TermClusteringAnalyzer:
                         logger.warning(f"⚠️ UPDATE failed for term='{term}', collection='{collection_name}' (0 rows updated - term not found in DB)")
                     else:
                         updated_count += 1
-                        logger.debug(f"✓ Updated term='{term}': domain='{domain}', synonyms={len(synonym_terms)} ({synonym_terms})")
+                        logger.info(f"✓ Updated term='{term}': domain='{domain}', synonyms={len(synonym_terms)} ({synonym_terms})")
 
                 except Exception as e:
                     logger.error(f"Error updating term '{term}': {e}", exc_info=True)
