@@ -14,23 +14,39 @@ from src.utils.helpers import render_term_card
 def get_all_terms_cached(_jargon_manager, collection_name: str):
     return pd.DataFrame(_jargon_manager.get_all_terms())
 
-def check_vector_store_has_data(rag_system):
-    """Check if vector store or document chunks have any data."""
+def check_vector_store_has_data(rag_system, collection_name: str):
+    """Check if vector store or document chunks have any data for the specified collection."""
     try:
         if not rag_system or not hasattr(rag_system, 'engine'):
             return False
 
         with rag_system.engine.connect() as conn:
-            # Check vector store (langchain_pg_embedding)
+            # Check vector store (langchain_pg_embedding) for this collection
             try:
-                result = conn.execute(text("SELECT COUNT(*) FROM langchain_pg_embedding"))
-                vector_count = result.scalar()
+                # Get collection_id for this collection_name
+                result = conn.execute(
+                    text("SELECT uuid FROM langchain_pg_collection WHERE name = :cname"),
+                    {"cname": collection_name}
+                )
+                collection_id = result.scalar()
+
+                if collection_id:
+                    result = conn.execute(
+                        text("SELECT COUNT(*) FROM langchain_pg_embedding WHERE collection_id = :cid"),
+                        {"cid": collection_id}
+                    )
+                    vector_count = result.scalar()
+                else:
+                    vector_count = 0
             except:
                 vector_count = 0
 
-            # Check keyword search chunks (document_chunks)
+            # Check keyword search chunks (document_chunks) for this collection
             try:
-                result = conn.execute(text("SELECT COUNT(*) FROM document_chunks"))
+                result = conn.execute(
+                    text("SELECT COUNT(*) FROM document_chunks WHERE collection_name = :cname"),
+                    {"cname": collection_name}
+                )
                 chunk_count = result.scalar()
             except:
                 chunk_count = 0
@@ -245,10 +261,10 @@ def render_term_extraction(rag_system, jargon_manager):
     """🔧 用語抽出タブ"""
     st.markdown("### 📚 用語辞書を生成")
 
-    # Check vector store status
-    has_vector_data = check_vector_store_has_data(rag_system)
+    # Check vector store status for current collection
+    has_vector_data = check_vector_store_has_data(rag_system, rag_system.collection_name)
     if not has_vector_data:
-        st.warning("⚠️ ベクトルストアにドキュメントが登録されていません。")
+        st.warning(f"⚠️ コレクション '{rag_system.collection_name}' にドキュメントが登録されていません。")
         st.info("""
 💡 **事前準備が必要です**:
 1. 「**ドキュメント**」タブでPDFをアップロード・登録
@@ -297,17 +313,21 @@ def render_term_extraction(rag_system, jargon_manager):
         temp_dir_path = None
         try:
             if input_mode == "登録済みドキュメントから抽出":
-                # Extract text from registered documents in database
+                # Extract text from registered documents in database (current collection only)
                 with rag_system.engine.connect() as conn:
-                    result = conn.execute(text("""
-                        SELECT content
-                        FROM document_chunks
-                        ORDER BY created_at
-                    """))
+                    result = conn.execute(
+                        text("""
+                            SELECT content
+                            FROM document_chunks
+                            WHERE collection_name = :cname
+                            ORDER BY created_at
+                        """),
+                        {"cname": rag_system.collection_name}
+                    )
                     all_chunks = [row[0] for row in result]
 
                 if not all_chunks:
-                    st.error("登録済みドキュメントが見つかりません。")
+                    st.error(f"コレクション '{rag_system.collection_name}' に登録済みドキュメントが見つかりません。")
                 else:
                     # Create temporary file with all content
                     temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_registered_"))
@@ -318,7 +338,7 @@ def render_term_extraction(rag_system, jargon_manager):
                         f.write("\n\n".join(all_chunks))
 
                     input_path = str(temp_dir_path)
-                    st.info(f"登録済みドキュメントから {len(all_chunks)} チャンクを抽出しました。")
+                    st.info(f"コレクション '{rag_system.collection_name}' から {len(all_chunks)} チャンクを抽出しました。")
 
                     output_path = Path(output_json)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
