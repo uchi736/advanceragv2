@@ -11,7 +11,7 @@ from src.rag.config import Config
 from src.utils.helpers import render_term_card
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_all_terms_cached(_jargon_manager):
+def get_all_terms_cached(_jargon_manager, collection_name: str):
     return pd.DataFrame(_jargon_manager.get_all_terms())
 
 def check_vector_store_has_data(rag_system):
@@ -122,7 +122,7 @@ def render_term_list(rag_system, jargon_manager):
 
     # Load term data
     with st.spinner("用語辞書を読み込み中..."):
-        all_terms_df = get_all_terms_cached(jargon_manager)
+        all_terms_df = get_all_terms_cached(jargon_manager, jargon_manager.collection_name)
 
     # Show registered terms section
     if all_terms_df.empty:
