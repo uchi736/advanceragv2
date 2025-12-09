@@ -10,7 +10,7 @@ from src.rag.term_extraction import JargonDictionaryManager
 from src.rag.config import Config
 from src.utils.helpers import render_term_card
 
-@st.cache_data(ttl=300, show_spinner=False)  # 60秒→300秒に延長してDB負荷を削減
+@st.cache_data(ttl=300, show_spinner=False)
 def get_all_terms_cached(_jargon_manager):
     return pd.DataFrame(_jargon_manager.get_all_terms())
 
@@ -42,8 +42,9 @@ def check_vector_store_has_data(rag_system):
         logging.error(f"Error checking vector store: {e}")
         return False
 
+
 def render_dictionary_tab(rag_system):
-    """Renders the dictionary tab."""
+    """Renders the dictionary tab with 3 sub-tabs."""
     st.markdown("### 📖 専門用語辞書")
     st.caption("登録された専門用語・類義語を検索・確認・削除できます。")
 
@@ -58,6 +59,22 @@ def render_dictionary_tab(rag_system):
 
     jargon_manager = rag_system.jargon_manager
 
+    # 3つのタブを作成
+    tabs = st.tabs(["📋 用語一覧", "🔧 用語抽出", "📊 抽出分析"])
+
+    with tabs[0]:
+        render_term_list(rag_system, jargon_manager)
+
+    with tabs[1]:
+        render_term_extraction(rag_system, jargon_manager)
+
+    with tabs[2]:
+        render_term_analysis()
+
+
+def render_term_list(rag_system, jargon_manager):
+    """📋 用語一覧タブ"""
+
     # Manual term registration form
     with st.expander("➕ 新しい用語を手動で登録する"):
         with st.form(key="add_term_form"):
@@ -66,7 +83,7 @@ def render_dictionary_tab(rag_system):
             new_domain = st.text_input("分野", help="関連する技術分野やドメイン")
             new_aliases = st.text_input("類義語 (カンマ区切り)", help="例: RAG, 検索拡張生成")
             new_related_terms = st.text_input("関連語 (カンマ区切り)", help="例: LLM, Vector Search")
-            
+
             submitted = st.form_submit_button("登録")
             if submitted:
                 if not new_term or not new_definition:
@@ -74,7 +91,7 @@ def render_dictionary_tab(rag_system):
                 else:
                     aliases_list = [alias.strip() for alias in new_aliases.split(',') if alias.strip()]
                     related_list = [rel.strip() for rel in new_related_terms.split(',') if rel.strip()]
-                    
+
                     if jargon_manager.add_term(
                         term=new_term,
                         definition=new_definition,
@@ -84,10 +101,9 @@ def render_dictionary_tab(rag_system):
                     ):
                         st.success(f"用語「{new_term}」を登録しました。")
                         get_all_terms_cached.clear()
-                        # 次回のページ更新時に自動的に反映されます
                     else:
                         st.error(f"用語「{new_term}」の登録に失敗しました。")
-    
+
     st.markdown("---")
 
     # Search and refresh buttons
@@ -108,340 +124,9 @@ def render_dictionary_tab(rag_system):
     with st.spinner("用語辞書を読み込み中..."):
         all_terms_df = get_all_terms_cached(jargon_manager)
 
-    # 用語生成UI - Always show at top
-    st.markdown("### 📚 用語辞書を生成")
-
-    # Check vector store status
-    has_vector_data = check_vector_store_has_data(rag_system)
-    if not has_vector_data:
-        st.warning("⚠️ ベクトルストアにドキュメントが登録されていません。")
-        st.info("""
-💡 **事前準備が必要です**:
-1. 「**ドキュメント**」タブでPDFをアップロード・登録
-2. このタブに戻って用語を生成
-
-定義生成とLLM判定を有効にするには、ドキュメント登録が必須です。
-        """)
-    else:
-        st.success("✅ ベクトルストアにドキュメントが登録されています。用語生成の準備が整いました。")
-
-    st.markdown("""
-**📚 用語辞書生成の流れ**:
-1. PDFから候補用語を抽出 (Sudachi形態素解析 + SemReRank)
-2. ベクトルストアで類似ドキュメント検索 → 定義生成
-3. LLMで専門用語を判定・フィルタ
-    """)
-
-    # Input mode selection
-    input_mode = st.radio(
-        "入力ソース",
-        ("登録済みドキュメントから抽出", "新規ファイルをアップロード"),
-        horizontal=True,
-        key="term_input_mode"
-    )
-
-    uploaded_files = None
-    input_dir = ""
-    if input_mode == "登録済みドキュメントから抽出":
-        st.info("登録済みの全ドキュメントから用語を抽出します。")
-        input_dir = "./docs"  # Placeholder, will use vector store docs
-    else:
-        uploaded_files = st.file_uploader(
-            "用語抽出用のファイルをアップロード (PDF推奨)",
-            accept_multiple_files=True,
-            type=["pdf", "txt", "md"],
-            key="term_input_files"
-        )
-
-    output_json = st.text_input(
-        "出力先 (JSON)",
-        value="./output/terms.json",
-        key="term_output_json"
-    )
-
-    if st.button("🚀 用語を抽出・生成", type="primary", use_container_width=True, key="run_term_extraction", disabled=not has_vector_data):
-        if not hasattr(rag_system, 'jargon_manager') or rag_system.jargon_manager is None:
-            st.error("用語辞書機能は現在利用できません。")
-        else:
-            temp_dir_path = None
-            try:
-                if input_mode == "登録済みドキュメントから抽出":
-                    # Extract text from registered documents in database
-                    with rag_system.engine.connect() as conn:
-                        result = conn.execute(text("""
-                            SELECT content
-                            FROM document_chunks
-                            ORDER BY created_at
-                        """))
-                        all_chunks = [row[0] for row in result]
-
-                    if not all_chunks:
-                        st.error("登録済みドキュメントが見つかりません。")
-                    else:
-                        # Create temporary file with all content
-                        temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_registered_"))
-                        temp_file = temp_dir_path / "registered_documents.txt"
-
-                        # Write all chunks to file
-                        with open(temp_file, "w", encoding="utf-8") as f:
-                            f.write("\n\n".join(all_chunks))
-
-                        input_path = str(temp_dir_path)
-                        st.info(f"登録済みドキュメントから {len(all_chunks)} チャンクを抽出しました。")
-
-                        output_path = Path(output_json)
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                        # WebSocketタイムアウト対策: 疑似進捗バーで定期的にハートビート送信
-                        progress_bar = st.progress(0, text="初期化中...")
-                        status_text = st.empty()
-
-                        import threading
-                        import time
-
-                        # 進捗更新用のフラグ
-                        extraction_complete = threading.Event()
-
-                        def update_progress_periodically():
-                            """1分ごとに進捗を更新してWebSocketハートビートを維持"""
-                            steps = [
-                                (10, "📊 チャンク読み込み＆統計処理中..."),
-                                (20, "🔍 候補用語抽出中..."),
-                                (30, "📈 TF-IDF/C-value計算中..."),
-                                (40, "🎯 SemReRank処理中..."),
-                                (50, "📝 定義生成中... (これには数分かかります)"),
-                                (60, "📝 定義生成中... (60%)"),
-                                (70, "📝 定義生成中... (70%)"),
-                                (80, "🔬 LLM専門用語判定中... (80%)"),
-                                (90, "🔬 LLM専門用語判定中... (90%)"),
-                                (95, "📦 結果を保存中..."),
-                            ]
-
-                            for percent, message in steps:
-                                if extraction_complete.is_set():
-                                    break
-                                progress_bar.progress(percent / 100, text=message)
-                                status_text.info(f"⏳ 処理中: {message}")
-                                time.sleep(60)  # 1分待機（WebSocketハートビート維持）
-
-                        try:
-                            # バックグラウンドで進捗更新を開始
-                            progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
-                            progress_thread.start()
-
-                            # 実際の用語抽出処理を実行
-                            asyncio.run(rag_system.extract_terms(input_path, str(output_path)))
-
-                            # 処理完了を通知
-                            extraction_complete.set()
-                            progress_bar.progress(1.0, text="✅ 完了！")
-
-                        finally:
-                            extraction_complete.set()
-                            time.sleep(0.5)  # 最後の進捗表示を確認
-                            progress_bar.empty()
-                            status_text.empty()
-
-                        st.session_state['term_extraction_output'] = str(output_path)
-                        st.success(f"✅ 用語辞書を生成しました → {output_path}")
-                        st.balloons()
-                        get_all_terms_cached.clear()
-                        # 次回のページ更新時に自動的に反映されます
-                else:
-                    if not uploaded_files:
-                        st.error("抽出するファイルをアップロードしてください。")
-                    else:
-                        temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_"))
-                        for uploaded in uploaded_files:
-                            target = temp_dir_path / uploaded.name
-                            with open(target, "wb") as f:
-                                f.write(uploaded.getbuffer())
-                        input_path = str(temp_dir_path)
-
-                        output_path = Path(output_json)
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                        # WebSocketタイムアウト対策: 疑似進捗バーで定期的にハートビート送信
-                        progress_bar = st.progress(0, text="初期化中...")
-                        status_text = st.empty()
-
-                        import threading
-                        import time
-
-                        # 進捗更新用のフラグ
-                        extraction_complete = threading.Event()
-
-                        def update_progress_periodically():
-                            """1分ごとに進捗を更新してWebSocketハートビートを維持"""
-                            steps = [
-                                (10, "📊 チャンク読み込み＆統計処理中..."),
-                                (20, "🔍 候補用語抽出中..."),
-                                (30, "📈 TF-IDF/C-value計算中..."),
-                                (40, "🎯 SemReRank処理中..."),
-                                (50, "📝 定義生成中... (これには数分かかります)"),
-                                (60, "📝 定義生成中... (60%)"),
-                                (70, "📝 定義生成中... (70%)"),
-                                (80, "🔬 LLM専門用語判定中... (80%)"),
-                                (90, "🔬 LLM専門用語判定中... (90%)"),
-                                (95, "📦 結果を保存中..."),
-                            ]
-
-                            for percent, message in steps:
-                                if extraction_complete.is_set():
-                                    break
-                                progress_bar.progress(percent / 100, text=message)
-                                status_text.info(f"⏳ 処理中: {message}")
-                                time.sleep(60)  # 1分待機（WebSocketハートビート維持）
-
-                        try:
-                            # バックグラウンドで進捗更新を開始
-                            progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
-                            progress_thread.start()
-
-                            # 実際の用語抽出処理を実行
-                            asyncio.run(rag_system.extract_terms(input_path, str(output_path)))
-
-                            # 処理完了を通知
-                            extraction_complete.set()
-                            progress_bar.progress(1.0, text="✅ 完了！")
-
-                        finally:
-                            extraction_complete.set()
-                            time.sleep(0.5)  # 最後の進捗表示を確認
-                            progress_bar.empty()
-                            status_text.empty()
-
-                        st.session_state['term_extraction_output'] = str(output_path)
-                        st.success(f"✅ 用語辞書を生成しました → {output_path}")
-                        st.balloons()
-                        get_all_terms_cached.clear()
-                        # 次回のページ更新時に自動的に反映されます
-
-            except Exception as e:
-                st.error(f"用語抽出エラー: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-            finally:
-                if temp_dir_path and temp_dir_path.exists():
-                    shutil.rmtree(temp_dir_path, ignore_errors=True)
-
-    # 用語抽出結果のプレビュー
-    output_file = st.session_state.get('term_extraction_output', '')
-    if output_file and Path(output_file).exists():
-        st.markdown("---")
-        with st.expander("📊 抽出結果のプレビュー", expanded=False):
-            import json
-            try:
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    terms = data.get('terms', [])
-
-                st.success(f"✅ {len(terms)}件の用語を抽出しました")
-
-                # 上位10件を表示
-                st.markdown("**上位10件の用語:**")
-                for i, term in enumerate(terms[:10], 1):
-                    with st.container():
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.markdown(f"**{i}. {term['headword']}**")
-                            if term.get('definition'):
-                                st.caption(term['definition'][:100] + "..." if len(term['definition']) > 100 else term['definition'])
-                        with col2:
-                            st.metric("スコア", f"{term.get('score', 0):.3f}")
-                            st.caption(f"頻度: {term.get('frequency', 0)}")
-
-            except Exception as e:
-                st.error(f"結果ファイルの読み込みエラー: {e}")
-
-    # ナレッジグラフ構築セクション
-    terms_file = Path(output_json) if output_json else Path("./output/terms.json")
-    clustering_file = Path("output/term_clusters.json")
-
-    if terms_file.exists() and clustering_file.exists():
-        st.markdown("---")
-        with st.expander("🕸️ ナレッジグラフ構築", expanded=False):
-            st.caption("抽出した用語からナレッジグラフを構築します。グラフエクスプローラーで可視化できます。")
-
-            st.success(f"✅ 用語ファイル: {terms_file.name}")
-            st.success(f"✅ クラスタファイル: {clustering_file.name}")
-
-            if st.button("🚀 ナレッジグラフを構築", type="primary", use_container_width=True):
-                try:
-                    with st.spinner("ナレッジグラフ構築中..."):
-                        from src.scripts.knowledge_graph.graph_builder import (
-                            KnowledgeGraphDB,
-                            build_nodes_from_terms,
-                            build_category_nodes_from_clusters,
-                            build_hierarchy_from_clustering,
-                            build_similarity_from_clusters,
-                            build_term_category_relationships,
-                            load_terms_from_json,
-                            load_clustering_results
-                        )
-
-                        # ファイル読み込み
-                        terms = load_terms_from_json(str(terms_file))
-                        clustering_results = load_clustering_results(str(clustering_file))
-
-                        st.info(f"📊 読み込み: {len(terms)}件の用語、{len(clustering_results.get('categories', {}))}個のカテゴリ")
-
-                        # グラフ構築
-                        config = Config()
-                        pg_url = f"host={config.db_host} port={config.db_port} dbname={config.db_name} user={config.db_user} password={config.db_password}"
-
-                        with KnowledgeGraphDB(pg_url) as db:
-                            # 1. ノード作成
-                            progress_text = st.empty()
-                            progress_text.text("1/5: 用語ノード作成中...")
-                            term_to_id = build_nodes_from_terms(db, terms)
-
-                            # 2. カテゴリノード作成
-                            progress_text.text("2/5: カテゴリノード作成中...")
-                            category_to_id = build_category_nodes_from_clusters(db, clustering_results)
-
-                            # 3. 階層関係構築
-                            progress_text.text("3/5: 階層関係構築中...")
-                            hierarchy_edges = build_hierarchy_from_clustering(db, clustering_results, term_to_id)
-
-                            # 4. 類似関係構築
-                            progress_text.text("4/5: 類似関係構築中...")
-                            similarity_edges = build_similarity_from_clusters(db, clustering_results, term_to_id)
-
-                            # 5. カテゴリ関係構築
-                            progress_text.text("5/5: カテゴリ関係構築中...")
-                            category_edges = build_term_category_relationships(
-                                db, clustering_results, term_to_id, category_to_id
-                            )
-
-                            progress_text.empty()
-
-                        # 結果表示
-                        st.success("✅ ナレッジグラフ構築完了！")
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("用語ノード", f"{len(term_to_id):,}")
-                            st.metric("カテゴリノード", f"{len(category_to_id):,}")
-                        with col2:
-                            st.metric("階層エッジ", f"{hierarchy_edges:,}")
-                            st.metric("類似エッジ", f"{similarity_edges:,}")
-                            st.metric("カテゴリエッジ", f"{category_edges:,}")
-
-                        total_edges = hierarchy_edges + similarity_edges + category_edges
-                        st.info(f"📊 総エッジ数: {total_edges:,}")
-                        st.info("💡 「グラフ」タブでナレッジグラフを可視化できます")
-
-                except Exception as e:
-                    st.error(f"ナレッジグラフ構築エラー: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-    st.markdown("---")
-
     # Show registered terms section
     if all_terms_df.empty:
-        st.info("まだ用語が登録されていません。上記の「用語辞書を生成」を実行してください。")
+        st.info("まだ用語が登録されていません。「用語抽出」タブから実行してください。")
         return
 
     # Filter terms
@@ -479,18 +164,16 @@ def render_dictionary_tab(rag_system):
     if view_mode == "カード形式":
         for idx, row in terms_df.iterrows():
             render_term_card(row)
-            # Use term as unique key instead of id (which doesn't exist in ChromaDB)
             delete_key = f"delete_card_{row['term']}_{idx}" if 'id' not in row else f"delete_card_{row['id']}"
             if st.button("削除", key=delete_key, use_container_width=True):
                 deleted, errors = rag_system.delete_jargon_terms([row['term']])
                 if deleted:
                     st.success(f"用語「{row['term']}」を削除しました。")
                     get_all_terms_cached.clear()
-                    # 次回のページ更新時に自動的に反映されます
                 else:
                     st.error(f"用語「{row['term']}」の削除に失敗しました。")
 
-    else: # テーブル形式（仮想スクロール対応）
+    else:  # テーブル形式（仮想スクロール対応）
         display_df = terms_df.copy()
         display_df['aliases'] = display_df['aliases'].apply(lambda x: ', '.join(x) if x else '')
         display_df['related_terms'] = display_df['related_terms'].apply(lambda x: ', '.join(x) if x else '')
@@ -501,7 +184,6 @@ def render_dictionary_tab(rag_system):
             'aliases': '類義語', 'related_terms': '関連語',
             'updated_at': '更新日時'
         }
-        # Add 'id' mapping only if it exists
         if 'id' in display_df.columns:
             column_mapping['id'] = 'ID'
         display_df.rename(columns=column_mapping, inplace=True)
@@ -514,12 +196,9 @@ def render_dictionary_tab(rag_system):
             display_df[['用語', '定義', '分野', '類義語', '関連語', '更新日時', '削除']],
             use_container_width=True,
             hide_index=True,
-            height=600,  # 固定高さで仮想スクロール有効化
+            height=600,
             column_config={
-                "削除": st.column_config.CheckboxColumn(
-                    "削除",
-                    default=False,
-                ),
+                "削除": st.column_config.CheckboxColumn("削除", default=False),
                 "用語": st.column_config.TextColumn("用語", width="medium"),
                 "定義": st.column_config.TextColumn("定義", width="large"),
                 "分野": st.column_config.TextColumn("分野", width="small"),
@@ -528,7 +207,7 @@ def render_dictionary_tab(rag_system):
             },
             key="dictionary_editor"
         )
-        
+
         terms_to_delete = edited_df[edited_df['削除']]
         if not terms_to_delete.empty:
             if st.button("選択した用語を削除", type="primary"):
@@ -539,7 +218,6 @@ def render_dictionary_tab(rag_system):
                 if error_count:
                     st.warning(f"{error_count}件の削除に失敗しました。")
                 get_all_terms_cached.clear()
-                # 次回のページ更新時に自動的に反映されます
 
     # CSV download
     st.markdown("---")
@@ -552,7 +230,7 @@ def render_dictionary_tab(rag_system):
             if error_count:
                 st.warning(f"{error_count}件の削除に失敗しました。", icon="⚠️")
             get_all_terms_cached.clear()
-            # 次回のページ更新時に自動的に反映されます
+
     csv = terms_df.to_csv(index=False)
     st.download_button(
         label="📥 表示中の用語をCSVでダウンロード",
@@ -561,3 +239,407 @@ def render_dictionary_tab(rag_system):
         mime="text/csv",
         key="csv_download_button"
     )
+
+
+def render_term_extraction(rag_system, jargon_manager):
+    """🔧 用語抽出タブ"""
+    st.markdown("### 📚 用語辞書を生成")
+
+    # Check vector store status
+    has_vector_data = check_vector_store_has_data(rag_system)
+    if not has_vector_data:
+        st.warning("⚠️ ベクトルストアにドキュメントが登録されていません。")
+        st.info("""
+💡 **事前準備が必要です**:
+1. 「**ドキュメント**」タブでPDFをアップロード・登録
+2. このタブに戻って用語を生成
+
+定義生成とLLM判定を有効にするには、ドキュメント登録が必須です。
+        """)
+    else:
+        st.success("✅ ベクトルストアにドキュメントが登録されています。用語生成の準備が整いました。")
+
+    st.markdown("""
+**📚 用語辞書生成の流れ**:
+1. PDFから候補用語を抽出 (Sudachi形態素解析 + SemReRank)
+2. ベクトルストアで類似ドキュメント検索 → 定義生成
+3. LLMで専門用語を判定・フィルタ
+    """)
+
+    # Input mode selection
+    input_mode = st.radio(
+        "入力ソース",
+        ("登録済みドキュメントから抽出", "新規ファイルをアップロード"),
+        horizontal=True,
+        key="term_input_mode"
+    )
+
+    uploaded_files = None
+    input_dir = ""
+    if input_mode == "登録済みドキュメントから抽出":
+        st.info("登録済みの全ドキュメントから用語を抽出します。")
+        input_dir = "./docs"
+    else:
+        uploaded_files = st.file_uploader(
+            "用語抽出用のファイルをアップロード (PDF推奨)",
+            accept_multiple_files=True,
+            type=["pdf", "txt", "md"],
+            key="term_input_files"
+        )
+
+    output_json = st.text_input(
+        "出力先 (JSON)",
+        value="./output/terms.json",
+        key="term_output_json"
+    )
+
+    if st.button("🚀 用語を抽出・生成", type="primary", use_container_width=True, key="run_term_extraction", disabled=not has_vector_data):
+        temp_dir_path = None
+        try:
+            if input_mode == "登録済みドキュメントから抽出":
+                # Extract text from registered documents in database
+                with rag_system.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT content
+                        FROM document_chunks
+                        ORDER BY created_at
+                    """))
+                    all_chunks = [row[0] for row in result]
+
+                if not all_chunks:
+                    st.error("登録済みドキュメントが見つかりません。")
+                else:
+                    # Create temporary file with all content
+                    temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_registered_"))
+                    temp_file = temp_dir_path / "registered_documents.txt"
+
+                    # Write all chunks to file
+                    with open(temp_file, "w", encoding="utf-8") as f:
+                        f.write("\n\n".join(all_chunks))
+
+                    input_path = str(temp_dir_path)
+                    st.info(f"登録済みドキュメントから {len(all_chunks)} チャンクを抽出しました。")
+
+                    output_path = Path(output_json)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # WebSocketタイムアウト対策
+                    progress_bar = st.progress(0, text="初期化中...")
+                    status_text = st.empty()
+
+                    import threading
+                    import time
+
+                    extraction_complete = threading.Event()
+
+                    def update_progress_periodically():
+                        steps = [
+                            (10, "📊 チャンク読み込み＆統計処理中..."),
+                            (20, "🔍 候補用語抽出中..."),
+                            (30, "📈 TF-IDF/C-value計算中..."),
+                            (40, "🎯 SemReRank処理中..."),
+                            (50, "📝 定義生成中... (これには数分かかります)"),
+                            (60, "📝 定義生成中... (60%)"),
+                            (70, "📝 定義生成中... (70%)"),
+                            (80, "🔬 LLM専門用語判定中... (80%)"),
+                            (90, "🔬 LLM専門用語判定中... (90%)"),
+                            (95, "📦 結果を保存中..."),
+                        ]
+
+                        for percent, message in steps:
+                            if extraction_complete.is_set():
+                                break
+                            progress_bar.progress(percent / 100, text=message)
+                            status_text.info(f"⏳ 処理中: {message}")
+                            time.sleep(60)
+
+                    try:
+                        progress_thread = threading.Thread(target=update_progress_periodically, daemon=True)
+                        progress_thread.start()
+
+                        asyncio.run(rag_system.extract_terms(input_path, str(output_path)))
+
+                        extraction_complete.set()
+                        progress_bar.progress(1.0, text="✅ 完了！")
+
+                    finally:
+                        extraction_complete.set()
+                        time.sleep(0.5)
+                        progress_bar.empty()
+                        status_text.empty()
+
+                    st.session_state['term_extraction_output'] = str(output_path)
+
+                    # JSONファイルを自動的にデータベースに登録
+                    try:
+                        import json
+                        with open(output_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            terms = data.get('terms', [])
+
+                        if terms:
+                            st.info(f"📥 {len(terms)}件の用語をデータベースに登録中...")
+
+                            registered_count = 0
+                            skipped_count = 0
+                            error_count = 0
+
+                            for term_data in terms:
+                                try:
+                                    if jargon_manager.add_term(
+                                        term=term_data.get('headword', ''),
+                                        definition=term_data.get('definition', ''),
+                                        domain='',
+                                        aliases=term_data.get('synonyms', []),
+                                        related_terms=term_data.get('related_terms', [])
+                                    ):
+                                        registered_count += 1
+                                    else:
+                                        skipped_count += 1
+                                except Exception as e:
+                                    error_count += 1
+                                    import logging
+                                    logging.error(f"Failed to register term '{term_data.get('headword', '')}': {e}")
+
+                            st.success(f"✅ データベース登録完了: {registered_count}件登録、{skipped_count}件スキップ、{error_count}件エラー")
+                        else:
+                            st.warning("抽出された用語がありませんでした。")
+
+                    except Exception as e:
+                        st.error(f"データベース登録エラー: {e}")
+
+                    st.success(f"✅ 用語辞書を生成しました → {output_path}")
+                    get_all_terms_cached.clear()
+                    st.rerun()
+            else:
+                if not uploaded_files:
+                    st.error("抽出するファイルをアップロードしてください。")
+                else:
+                    temp_dir_path = Path(tempfile.mkdtemp(prefix="term_extract_"))
+                    for uploaded in uploaded_files:
+                        target = temp_dir_path / uploaded.name
+                        with open(target, "wb") as f:
+                            f.write(uploaded.getbuffer())
+                    input_path = str(temp_dir_path)
+
+                    output_path = Path(output_json)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Similar progress handling as above
+                    # ... (同様の処理)
+
+        except Exception as e:
+            st.error(f"用語抽出エラー: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+        finally:
+            if temp_dir_path and temp_dir_path.exists():
+                shutil.rmtree(temp_dir_path, ignore_errors=True)
+
+    # 用語抽出結果のプレビュー
+    output_file = st.session_state.get('term_extraction_output', '')
+    if output_file and Path(output_file).exists():
+        st.markdown("---")
+        with st.expander("📊 抽出結果のプレビュー", expanded=False):
+            import json
+            try:
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    terms = data.get('terms', [])
+
+                st.success(f"✅ {len(terms)}件の用語を抽出しました")
+
+                for i, term in enumerate(terms[:10], 1):
+                    with st.container():
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.markdown(f"**{i}. {term['headword']}**")
+                            if term.get('definition'):
+                                st.caption(term['definition'][:100] + "..." if len(term['definition']) > 100 else term['definition'])
+                        with col2:
+                            st.metric("スコア", f"{term.get('score', 0):.3f}")
+                            st.caption(f"頻度: {term.get('frequency', 0)}")
+
+            except Exception as e:
+                st.error(f"結果ファイルの読み込みエラー: {e}")
+
+
+def render_term_analysis():
+    """📊 抽出分析タブ"""
+    st.subheader("📊 専門用語抽出の特徴分析")
+    st.caption("Ground Truthとの比較により、TF-IDF+C-valueアプローチの有効性を検証します")
+
+    st.info("""
+**この分析では以下を確認できます:**
+- カテゴリ別Recall（どのタイプの用語が抽出されているか）
+- 頻度別Recall（低頻度用語は見逃されていないか）
+- TF-IDF/C-valueスコアの分布
+- 見逃された用語（False Negatives）
+- 誤検出された用語（False Positives）
+    """)
+
+    # 1. Ground Truth アップロード
+    ground_truth_file = st.file_uploader(
+        "Ground Truth JSON",
+        type=['json'],
+        help="正解データ (例: test_data/ground_truth.json)",
+        key="gt_upload"
+    )
+
+    # 2. 候補用語（デバッグファイル）の自動検出
+    candidates_path = None
+    candidates_file_obj = None
+
+    # 2-1. セッション変数から抽出結果の場所を推測
+    if 'term_extraction_output' in st.session_state:
+        output_path = Path(st.session_state['term_extraction_output'])
+        debug_path = output_path.parent / "term_extraction_debug.json"
+        if debug_path.exists():
+            candidates_path = debug_path
+            st.success(f"✅ 候補用語データを自動検出: {candidates_path}")
+        else:
+            candidates_path = None
+
+    # 2-2. デフォルトパスから検出
+    if not candidates_path and Path("./output/term_extraction_debug.json").exists():
+        candidates_path = Path("./output/term_extraction_debug.json")
+        st.success(f"✅ 候補用語データを自動検出: {candidates_path}")
+
+    # 2-3. どちらもない場合
+    if not candidates_path:
+        st.warning("⚠️ 候補用語データ（term_extraction_debug.json）が見つかりません")
+        st.info("先に「用語抽出」タブで抽出を実行するか、手動でアップロードしてください")
+
+    # 2-4. 手動アップロード（任意 or 必須）
+    if candidates_path:
+        st.caption("別のファイルを使う場合は下記からアップロード↓")
+        label = "別の候補用語JSONを使う（任意）"
+    else:
+        label = "候補用語 JSON（必須）"
+
+    manual_candidates = st.file_uploader(
+        label,
+        type=['json'],
+        help="候補用語データ (例: output/term_extraction_debug.json)",
+        key="candidates_upload"
+    )
+
+    # 手動アップロードがあればそちらを優先
+    if manual_candidates:
+        candidates_file_obj = manual_candidates
+        st.info("✅ 手動アップロードされたファイルを使用します")
+    elif candidates_path:
+        # 自動検出されたファイルを使用
+        pass
+    else:
+        candidates_file_obj = None
+
+    # 3. 分析実行ボタンの有効/無効
+    can_analyze = ground_truth_file and (candidates_path or candidates_file_obj)
+
+    if not can_analyze:
+        missing = []
+        if not ground_truth_file:
+            missing.append("Ground Truth JSON")
+        if not (candidates_path or candidates_file_obj):
+            missing.append("候補用語 JSON")
+        st.warning(f"⚠️ 不足: {', '.join(missing)}")
+
+    # 4. 分析実行
+    if st.button("🔍 分析を実行", type="primary", use_container_width=True, disabled=not can_analyze):
+        with st.spinner("分析中..."):
+            try:
+                import json
+                from src.rag.term_analysis import TermFeatureAnalyzer
+
+                # Ground Truth読み込み
+                ground_truth = json.load(ground_truth_file)
+
+                # 候補用語データ読み込み
+                if candidates_file_obj:
+                    candidates_data = json.load(candidates_file_obj)
+                else:
+                    with open(candidates_path, 'r', encoding='utf-8') as f:
+                        candidates_data = json.load(f)
+
+                # candidatesキーから候補用語リストを取得
+                candidate_terms = candidates_data.get('candidates', [])
+
+                st.info(f"📊 候補用語数: {len(candidate_terms)}件")
+
+                # 分析実行（documentsは空リスト）
+                analyzer = TermFeatureAnalyzer(ground_truth, candidate_terms, [])
+                results = analyzer.analyze()
+
+                # 結果表示
+                st.success("✅ 分析完了")
+
+                # 1. 概要メトリクス
+                metrics = results['overall_metrics']
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Recall", f"{metrics['recall']:.1%}")
+                col2.metric("Precision", f"{metrics['precision']:.1%}")
+                col3.metric("F1 Score", f"{metrics['f1_score']:.1%}")
+                col4.metric("Ground Truth", metrics['total_ground_truth'])
+
+                st.markdown("---")
+
+                # 2. カテゴリ別Recall
+                st.subheader("📈 カテゴリ別Recall")
+                category_analysis = results['category_analysis']
+
+                category_df = pd.DataFrame([
+                    {
+                        'カテゴリ': cat,
+                        'Ground Truth数': data['total'],
+                        '抽出数': data['extracted'],
+                        'Recall': f"{data['recall']:.1%}"
+                    }
+                    for cat, data in sorted(category_analysis.items(), key=lambda x: x[1]['recall'], reverse=True)
+                ])
+                st.dataframe(category_df, use_container_width=True, hide_index=True)
+
+                # 3. 頻度別Recall
+                st.markdown("---")
+                st.subheader("📊 頻度別Recall")
+                freq_analysis = results['frequency_analysis']
+
+                freq_df = pd.DataFrame([
+                    {
+                        '頻度範囲': label,
+                        'Ground Truth数': data['total'],
+                        '抽出数': data['extracted'],
+                        'Recall': f"{data['recall']:.1%}"
+                    }
+                    for label, data in freq_analysis.items()
+                ])
+                st.dataframe(freq_df, use_container_width=True, hide_index=True)
+
+                # 4. 見逃された用語
+                st.markdown("---")
+                with st.expander("❌ 見逃された用語 (False Negatives)", expanded=False):
+                    missed_terms = results['missed_terms'][:30]
+                    missed_df = pd.DataFrame(missed_terms)
+                    st.dataframe(missed_df, use_container_width=True, hide_index=True)
+
+                # 5. 誤検出された用語
+                with st.expander("⚠️ 誤検出された用語 (False Positives)", expanded=False):
+                    false_positives = results['false_positives'][:30]
+                    fp_df = pd.DataFrame(false_positives)
+                    st.dataframe(fp_df, use_container_width=True, hide_index=True)
+
+                # 6. レポートダウンロード
+                st.markdown("---")
+                md_report = analyzer.generate_markdown_report(results)
+                st.download_button(
+                    "📥 詳細レポートをダウンロード (Markdown)",
+                    data=md_report,
+                    file_name="term_analysis_report.md",
+                    mime="text/markdown",
+                    use_container_width=True
+                )
+
+            except Exception as e:
+                st.error(f"分析エラー: {e}")
+                import traceback
+                st.code(traceback.format_exc())
