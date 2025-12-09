@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import re
 from sqlalchemy import text
 
 def check_vector_store_has_data(rag_system):
@@ -59,6 +60,40 @@ def render_sidebar(rag_system, env_defaults):
                         st.rerun()
                     else:
                         st.error("❌ コレクションの切り替えに失敗しました")
+
+            # New collection creation
+            st.markdown("#### 🆕 新規コレクション作成")
+
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                new_collection_name = st.text_input(
+                    "新しいコレクション名",
+                    placeholder="例: project_2024",
+                    key="new_collection_input",
+                    help="英数字とアンダースコアのみ使用可能",
+                    label_visibility="collapsed"
+                )
+            with col2:
+                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)  # Align button
+                create_button = st.button("作成", type="secondary", use_container_width=True)
+
+            # Validation & creation logic
+            if create_button:
+                if not new_collection_name:
+                    st.error("❌ コレクション名を入力してください")
+                elif not re.match(r'^[a-zA-Z0-9_]+$', new_collection_name):
+                    st.error("❌ 英数字とアンダースコア(_)のみ使用できます")
+                elif new_collection_name in available_collections:
+                    st.warning(f"⚠️ '{new_collection_name}' は既に存在します")
+                else:
+                    # Create and switch to new collection
+                    with st.spinner(f"コレクション '{new_collection_name}' を作成中..."):
+                        success = rag_system.switch_collection(new_collection_name)
+                        if success:
+                            st.success(f"✅ '{new_collection_name}' を作成して切り替えました")
+                            st.rerun()
+                        else:
+                            st.error("❌ コレクションの作成に失敗しました")
 
         st.markdown("---")
         st.info("すべての設定は「詳細設定」タブで行えます。")
