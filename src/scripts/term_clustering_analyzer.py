@@ -590,13 +590,27 @@ class TermClusteringAnalyzer:
                 all_llm_tasks.append(task)
                 all_task_metadata.append((term_name, similarities))
 
-        # 全LLM判定を並列実行（1専門用語につき1タスク = 27タスク程度）
+        # 全LLM判定をセマフォで制限付き並列実行（TPM/RPM制限対策）
         if use_llm_for_candidates and all_llm_tasks:
             import asyncio
-            logger.info(f"Running bulk LLM judgment: {len(all_llm_tasks)} total tasks (1 task per specialized term)")
 
-            # 全タスクを並列実行（タスク数が少ないのでバッチ分割不要）
-            results = await asyncio.gather(*all_llm_tasks, return_exceptions=True)
+            # 同時実行数制限を設定から取得
+            max_concurrent = getattr(cfg, 'max_concurrent_llm_requests', 10)
+
+            logger.info(f"Running LLM judgment: {len(all_llm_tasks)} tasks (max {max_concurrent} concurrent)")
+
+            # セマフォを使用して同時実行数を制限
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def run_with_semaphore(task):
+                async with semaphore:
+                    return await task
+
+            # 全タスクをセマフォ付きで実行
+            results = await asyncio.gather(
+                *[run_with_semaphore(task) for task in all_llm_tasks],
+                return_exceptions=True
+            )
 
             # 結果を各専門用語に振り分け
             for (term_name, similarities), result in zip(all_task_metadata, results):
