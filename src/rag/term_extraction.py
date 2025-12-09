@@ -1305,18 +1305,20 @@ async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, ll
                 # 候補用語の読み込み（デバッグファイルから）
                 debug_file = output_json.parent / "term_extraction_debug.json"
                 if debug_file.exists():
-                    # 専門用語と候補用語を読み込み
-                    specialized_terms = load_specialized_terms(pg_url, jargon_table_name)
+                    # 専門用語と候補用語を読み込み（collection_nameを指定）
+                    current_collection = config.collection_name
+                    specialized_terms = load_specialized_terms(pg_url, jargon_table_name, current_collection)
                     candidate_terms = load_candidate_terms_from_extraction(debug_file)
 
                     if specialized_terms and candidate_terms:
-                        # 類義語抽出と保存
+                        # 類義語抽出と保存（collection_nameを渡す）
                         synonyms_dict = await extract_and_save_semantic_synonyms(
                             specialized_terms=specialized_terms,
                             candidate_terms=candidate_terms,
                             pg_url=pg_url,
                             jargon_table_name=jargon_table_name,
-                            embeddings=embeddings
+                            embeddings=embeddings,
+                            collection_name=current_collection
                         )
                         logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
                     else:

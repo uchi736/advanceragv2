@@ -30,9 +30,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 logger = logging.getLogger(__name__)
 
 
-def load_specialized_terms(connection_string: str, jargon_table_name: str = None) -> List[Dict[str, Any]]:
+def load_specialized_terms(connection_string: str, jargon_table_name: str = None, collection_name: str = None) -> List[Dict[str, Any]]:
     """
     DBから専門用語を読み込み（定義あり）
+
+    Args:
+        connection_string: PostgreSQL接続文字列
+        jargon_table_name: 専門用語テーブル名
+        collection_name: コレクション名（指定された場合のみフィルタ）
 
     Returns:
         [{"term": "ETC", "definition": "...", "text": "ETC: ..."}]
@@ -41,17 +46,31 @@ def load_specialized_terms(connection_string: str, jargon_table_name: str = None
         jargon_table_name = JARGON_TABLE_NAME
 
     engine = create_engine(connection_string)
-    query = text(f"""
-        SELECT term, definition, related_terms
-        FROM {jargon_table_name}
-        WHERE definition IS NOT NULL AND definition != ''
-        ORDER BY term
-    """)
+
+    # collection_nameでフィルタする場合
+    if collection_name:
+        query = text(f"""
+            SELECT term, definition, related_terms
+            FROM {jargon_table_name}
+            WHERE collection_name = :collection_name
+              AND definition IS NOT NULL AND definition != ''
+            ORDER BY term
+        """)
+    else:
+        query = text(f"""
+            SELECT term, definition, related_terms
+            FROM {jargon_table_name}
+            WHERE definition IS NOT NULL AND definition != ''
+            ORDER BY term
+        """)
 
     terms = []
     try:
         with engine.connect() as conn:
-            result = conn.execute(query)
+            if collection_name:
+                result = conn.execute(query, {"collection_name": collection_name})
+            else:
+                result = conn.execute(query)
             for row in result:
                 terms.append({
                     'term': row.term,
@@ -216,7 +235,8 @@ async def extract_and_save_semantic_synonyms(
     candidate_terms: List[Dict[str, Any]],
     pg_url: str,
     jargon_table_name: str,
-    embeddings
+    embeddings,
+    collection_name: str = None
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
     意味ベース類義語を抽出してDBに保存（term_extraction.pyから呼ばれる統合関数）
@@ -227,6 +247,7 @@ async def extract_and_save_semantic_synonyms(
         pg_url: PostgreSQL接続URL
         jargon_table_name: 専門用語テーブル名
         embeddings: AzureOpenAIEmbeddings instance
+        collection_name: コレクション名（DB更新時に使用）
 
     Returns:
         {term: [{"term": "類義語", "similarity": 0.92, "is_specialized": True}]}
@@ -271,7 +292,7 @@ async def extract_and_save_semantic_synonyms(
         cluster_names = result.get('cluster_names', {})
 
         # DBに保存（クラスタ名も含む）
-        analyzer.update_semantic_synonyms_to_db(synonyms_dict, cluster_mapping, cluster_names)
+        analyzer.update_semantic_synonyms_to_db(synonyms_dict, cluster_mapping, cluster_names, collection_name)
         logger.info(f"Extracted semantic synonyms for {len(synonyms_dict)} terms")
         logger.info(f"Updated domain field with cluster info for {len(cluster_mapping)} terms")
         if cluster_names:

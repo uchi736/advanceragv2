@@ -727,7 +727,8 @@ class TermClusteringAnalyzer:
         self,
         synonyms_dict: Dict[str, List[Dict[str, Any]]],
         cluster_mapping: Dict[str, int] = None,
-        cluster_names: Dict[int, str] = None
+        cluster_names: Dict[int, str] = None,
+        collection_name: str = None
     ):
         """
         抽出した意味的類義語とクラスタ情報をDBに保存
@@ -738,15 +739,18 @@ class TermClusteringAnalyzer:
             synonyms_dict: 類義語辞書 {term: [{"term": ..., "similarity": ...}]}
             cluster_mapping: クラスタマッピング {term: cluster_id} ※全用語を含む
             cluster_names: クラスタ名マッピング {cluster_id: "軸受技術"}
+            collection_name: コレクション名（指定されない場合はデフォルト値を使用）
         """
         if not cluster_mapping:
             logger.warning("No cluster_mapping provided, skipping domain update")
             return 0
 
-        # Get collection_name from config
-        from rag.config import Config
-        cfg = Config()
-        collection_name = cfg.collection_name
+        # collection_nameが指定されていない場合はデフォルト値を使用
+        if collection_name is None:
+            from rag.config import Config
+            cfg = Config()
+            collection_name = cfg.collection_name
+            logger.warning(f"collection_name not provided, using default: {collection_name}")
 
         engine = create_engine(self.connection_string)
 
