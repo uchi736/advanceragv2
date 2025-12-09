@@ -1224,15 +1224,16 @@ class TermExtractor:
                 try:
                     conn.execute(
                         text(f"""
-                            INSERT INTO {self.jargon_table_name} (term, definition, aliases, related_terms)
-                            VALUES (:term, :definition, :aliases, :related_terms)
-                            ON CONFLICT (term) DO UPDATE
+                            INSERT INTO {self.jargon_table_name} (collection_name, term, definition, aliases, related_terms)
+                            VALUES (:collection_name, :term, :definition, :aliases, :related_terms)
+                            ON CONFLICT (collection_name, term) DO UPDATE
                             SET definition = EXCLUDED.definition,
                                 aliases = EXCLUDED.aliases,
                                 related_terms = EXCLUDED.related_terms,
                                 updated_at = CURRENT_TIMESTAMP
                         """),
                         {
+                            "collection_name": self.config.collection_name,
                             "term": term.get("headword"),
                             "definition": term.get("definition", ""),
                             "aliases": term.get("synonyms", []),
