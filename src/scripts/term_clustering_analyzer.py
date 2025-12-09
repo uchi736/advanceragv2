@@ -743,6 +743,11 @@ class TermClusteringAnalyzer:
             logger.warning("No cluster_mapping provided, skipping domain update")
             return 0
 
+        # Get collection_name from config
+        from rag.config import Config
+        cfg = Config()
+        collection_name = cfg.collection_name
+
         engine = create_engine(self.connection_string)
 
         updated_count = 0
@@ -780,14 +785,20 @@ class TermClusteringAnalyzer:
                 try:
                     # 3. 無条件で上書き（COALESCEなし）
                     # Note: 'aliases'列に類義語を保存（semantic_synonymsは存在しない）
+                    # WHERE句を複合キーに修正
                     conn.execute(
                         text(f"""
                             UPDATE {self.jargon_table_name}
                             SET aliases = :synonyms,
                                 domain = :domain
-                            WHERE term = :term
+                            WHERE collection_name = :collection_name AND term = :term
                         """),
-                        {"term": term, "synonyms": synonym_terms, "domain": domain}
+                        {
+                            "collection_name": collection_name,
+                            "term": term,
+                            "synonyms": synonym_terms,
+                            "domain": domain
+                        }
                     )
                     updated_count += 1
                 except Exception as e:
