@@ -562,8 +562,12 @@ def render_term_analysis():
                     with open(candidates_path, 'r', encoding='utf-8') as f:
                         candidates_data = json.load(f)
 
-                # candidatesキーから候補用語リストを取得
-                candidate_terms = candidates_data.get('candidates', [])
+                # 候補用語リストを取得（複数フォーマット対応）
+                candidate_terms = (
+                    candidates_data.get('candidates') or
+                    candidates_data.get('terms') or
+                    (candidates_data if isinstance(candidates_data, list) else [])
+                )
 
                 st.info(f"📊 候補用語数: {len(candidate_terms)}件")
 
@@ -628,7 +632,146 @@ def render_term_analysis():
                     fp_df = pd.DataFrame(false_positives)
                     st.dataframe(fp_df, use_container_width=True, hide_index=True)
 
-                # 6. レポートダウンロード
+                # 6. SemReRankスコア改善分析
+                if 'semrerank_impact' in results and results['semrerank_impact']['all_changes']:
+                    st.markdown("---")
+                    st.subheader("🔄 SemReRankスコア改善分析")
+
+                    impact = results['semrerank_impact']
+                    freq_impact = impact['frequency_impact']
+
+                    # 頻度別のスコア向上率
+                    impact_df = pd.DataFrame([
+                        {
+                            '頻度範囲': label,
+                            '対象用語数': data['count'],
+                            '平均スコア向上率': f"{(data['mean_ratio'] - 1) * 100:.1f}%",
+                            '中央値スコア向上率': f"{(data['median_ratio'] - 1) * 100:.1f}%"
+                        }
+                        for label, data in freq_impact.items()
+                        if data['count'] > 0
+                    ])
+                    st.dataframe(impact_df, use_container_width=True, hide_index=True)
+
+                    st.caption("💡 低頻度用語ほどSemReRankの恩恵を受けやすい傾向があります")
+
+                    # Ground Truth用語の頻度分布
+                    if 'gt_frequencies' in impact and impact['gt_frequencies']:
+                        st.markdown("#### 📊 Ground Truth用語の頻度分布")
+                        gt_freq_dist = impact['gt_freq_distribution']
+
+                        # 頻度分布テーブル
+                        gt_dist_df = pd.DataFrame([
+                            {
+                                '頻度範囲': label,
+                                '用語数': count,
+                                '割合': f"{count / sum(gt_freq_dist.values()) * 100:.1f}%" if sum(gt_freq_dist.values()) > 0 else "0%"
+                            }
+                            for label, count in gt_freq_dist.items()
+                            if count > 0
+                        ])
+                        st.dataframe(gt_dist_df, use_container_width=True, hide_index=True)
+
+                        st.caption(f"💡 合計 {len(impact['gt_frequencies'])} 件の正解用語が見つかりました")
+
+                    # スコア分布の可視化
+                    with st.expander("📊 スコア分布の詳細", expanded=False):
+                        all_changes = impact['all_changes']
+
+                        # Before/After散布図
+                        import matplotlib.pyplot as plt
+                        import matplotlib
+                        matplotlib.use('Agg')  # バックエンド設定
+
+                        # 日本語フォント設定
+                        import platform
+                        if platform.system() == 'Windows':
+                            plt.rcParams['font.family'] = 'Yu Gothic'
+                        elif platform.system() == 'Darwin':  # macOS
+                            plt.rcParams['font.family'] = 'Hiragino Sans'
+                        else:  # Linux
+                            plt.rcParams['font.family'] = 'Noto Sans CJK JP'
+                        plt.rcParams['axes.unicode_minus'] = False  # マイナス記号の文字化け対策
+
+                        # 3つのグラフを配置
+                        fig = plt.figure(figsize=(15, 10))
+                        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+                        ax1 = fig.add_subplot(gs[0, 0])
+                        ax2 = fig.add_subplot(gs[0, 1])
+                        ax3 = fig.add_subplot(gs[1, :])
+
+                        # 左上: Base Score vs Revised Score
+                        base_scores = [x['base_score'] for x in all_changes]
+                        revised_scores = [x['revised_score'] for x in all_changes]
+
+                        ax1.scatter(base_scores, revised_scores, alpha=0.6)
+                        max_score = max(max(base_scores), max(revised_scores))
+                        ax1.plot([0, max_score], [0, max_score], 'r--', label='y=x', linewidth=1)
+                        ax1.set_xlabel('正規化スコア (Before)')
+                        ax1.set_ylabel('正規化スコア (After)')
+                        ax1.set_title('SemReRankによるスコア変化')
+                        ax1.legend()
+                        ax1.grid(True, alpha=0.3)
+
+                        # 右上: 頻度別スコア向上率
+                        freq_labels = [label for label, data in freq_impact.items() if data['count'] > 0]
+                        mean_ratios = [(freq_impact[label]['mean_ratio'] - 1) * 100
+                                       for label in freq_labels]
+
+                        ax2.bar(freq_labels, mean_ratios, color='steelblue', alpha=0.7)
+                        ax2.set_xlabel('出現頻度')
+                        ax2.set_ylabel('平均スコア向上率 (%)')
+                        ax2.set_title('頻度別スコア向上率')
+                        ax2.grid(True, axis='y', alpha=0.3)
+                        ax2.axhline(y=0, color='red', linestyle='--', linewidth=1)
+
+                        # 下段: スコア分布ヒストグラム（Before/After重ね合わせ）
+                        ax3.hist(base_scores, bins=30, alpha=0.5, label='適用前', color='orange', edgecolor='black')
+                        ax3.hist(revised_scores, bins=30, alpha=0.5, label='適用後', color='blue', edgecolor='black')
+                        ax3.set_xlabel('正規化スコア (0-1)')
+                        ax3.set_ylabel('用語数')
+                        ax3.set_title('スコア分布: SemReRank適用前後')
+                        ax3.legend()
+                        ax3.grid(True, alpha=0.3, axis='y')
+
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # Ground Truth用語の頻度ヒストグラム
+                    if 'gt_frequencies' in impact and impact['gt_frequencies']:
+                        with st.expander("📈 Ground Truth用語の頻度ヒストグラム", expanded=False):
+                            # 日本語フォント設定
+                            import platform
+                            if platform.system() == 'Windows':
+                                plt.rcParams['font.family'] = 'Yu Gothic'
+                            elif platform.system() == 'Darwin':  # macOS
+                                plt.rcParams['font.family'] = 'Hiragino Sans'
+                            else:  # Linux
+                                plt.rcParams['font.family'] = 'Noto Sans CJK JP'
+                            plt.rcParams['axes.unicode_minus'] = False
+
+                            fig, ax = plt.subplots(figsize=(10, 5))
+
+                            gt_freqs = impact['gt_frequencies']
+                            ax.hist(gt_freqs, bins=range(1, max(gt_freqs) + 2), alpha=0.7, color='green', edgecolor='black')
+                            ax.set_xlabel('出現頻度')
+                            ax.set_ylabel('用語数')
+                            ax.set_title('Ground Truth用語の頻度分布')
+                            ax.grid(True, alpha=0.3, axis='y')
+
+                            # 統計情報を表示
+                            mean_freq = sum(gt_freqs) / len(gt_freqs)
+                            median_freq = sorted(gt_freqs)[len(gt_freqs) // 2]
+                            ax.axvline(mean_freq, color='red', linestyle='--', linewidth=2, label=f'平均: {mean_freq:.1f}')
+                            ax.axvline(median_freq, color='blue', linestyle='--', linewidth=2, label=f'中央値: {median_freq}')
+                            ax.legend()
+
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            plt.close(fig)
+
+                # 7. レポートダウンロード
                 st.markdown("---")
                 md_report = analyzer.generate_markdown_report(results)
                 st.download_button(

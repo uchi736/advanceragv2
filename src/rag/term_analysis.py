@@ -53,8 +53,47 @@ class TermFeatureAnalyzer:
         # 全テキスト結合
         self.full_text = "\n\n".join(documents)
 
+        # スコア正規化処理（base_score_normalizedが無い場合）
+        self._normalize_scores()
+
         logger.info(f"Ground Truth: {len(self.gt_terms)} terms")
         logger.info(f"Extracted: {len(self.extracted_set)} terms")
+
+    def _normalize_scores(self) -> None:
+        """スコアを正規化（0-1の範囲）"""
+        # base_scoreとrevised_scoreを収集
+        all_base = [t.get('base_score', 0) for t in self.extracted_terms if t.get('base_score', 0) > 0]
+        all_revised = [t.get('revised_score', 0) for t in self.extracted_terms if t.get('revised_score', 0) > 0]
+
+        # データが無い場合はスキップ
+        if not all_base or not all_revised:
+            logger.info("No base_score or revised_score found, skipping normalization")
+            return
+
+        # Min-Max正規化
+        min_base, max_base = min(all_base), max(all_base)
+        min_revised, max_revised = min(all_revised), max(all_revised)
+
+        logger.info(f"Normalizing scores: base [{min_base:.2f}, {max_base:.2f}], revised [{min_revised:.2f}, {max_revised:.2f}]")
+
+        for term in self.extracted_terms:
+            # 既に正規化済みの場合はスキップ
+            if 'base_score_normalized' in term and 'revised_score_normalized' in term:
+                continue
+
+            base = term.get('base_score', 0)
+            revised = term.get('revised_score', 0)
+
+            # Min-Max正規化
+            if max_base > min_base and base > 0:
+                term['base_score_normalized'] = (base - min_base) / (max_base - min_base)
+            else:
+                term['base_score_normalized'] = 0.0
+
+            if max_revised > min_revised and revised > 0:
+                term['revised_score_normalized'] = (revised - min_revised) / (max_revised - min_revised)
+            else:
+                term['revised_score_normalized'] = 0.0
 
     def _get_term_name(self, term_dict: Dict) -> str:
         """用語辞書から用語名を取得（headwordまたはterm）"""
@@ -69,6 +108,7 @@ class TermFeatureAnalyzer:
             'category_analysis': self._analyze_by_category(),
             'frequency_analysis': self._analyze_by_frequency(),
             'score_analysis': self._analyze_scores(),
+            'semrerank_impact': self._analyze_semrerank_impact(),
             'missed_terms': self._find_missed_terms(),
             'false_positives': self._find_false_positives(),
             'term_details': self._create_term_details()
@@ -239,6 +279,118 @@ class TermFeatureAnalyzer:
         return {
             'score_statistics': score_stats,
             'ground_truth_scores': gt_scores
+        }
+
+    def _analyze_semrerank_impact(self) -> Dict:
+        """SemReRankによるスコア変化を分析"""
+        # 抽出用語のスコア情報を取得
+        extracted_dict = {self._get_term_name(term): term for term in self.extracted_terms}
+
+        # Ground Truth用語についてスコア変化を分析
+        gt_score_changes = []
+        for term in self.gt_terms:
+            if term in extracted_dict:
+                info = extracted_dict[term]
+
+                # 正規化スコアを優先的に使用
+                base_norm = info.get('base_score_normalized', 0)
+                revised_norm = info.get('revised_score_normalized', 0)
+
+                # 正規化スコアがある場合はそれを使用、なければ生スコア
+                if base_norm > 0 or revised_norm > 0:
+                    base = base_norm
+                    revised = revised_norm
+                else:
+                    base = info.get('base_score', 0)
+                    revised = info.get('revised_score', 0)
+
+                importance = info.get('importance_score', 0)
+                freq = info.get('frequency', 0)
+
+                # base_scoreが0の場合はスキップ（データ不整合）
+                if base > 0:
+                    gt_score_changes.append({
+                        'term': term,
+                        'frequency': freq,
+                        'base_score': base,
+                        'revised_score': revised,
+                        'importance_score': importance,
+                        'score_change': revised - base,
+                        'score_ratio': revised / base
+                    })
+
+        # データがない場合は空の結果を返す
+        if not gt_score_changes:
+            logger.warning("No SemReRank score data available for analysis")
+            return {
+                'all_changes': [],
+                'frequency_impact': {}
+            }
+
+        # 頻度別の影響分析
+        freq_impact = {
+            '1回': [],
+            '2回': [],
+            '3-5回': [],
+            '6-10回': [],
+            '11回以上': []
+        }
+
+        for item in gt_score_changes:
+            freq = item['frequency']
+            if freq == 1:
+                freq_impact['1回'].append(item['score_ratio'])
+            elif freq == 2:
+                freq_impact['2回'].append(item['score_ratio'])
+            elif 3 <= freq <= 5:
+                freq_impact['3-5回'].append(item['score_ratio'])
+            elif 6 <= freq <= 10:
+                freq_impact['6-10回'].append(item['score_ratio'])
+            else:
+                freq_impact['11回以上'].append(item['score_ratio'])
+
+        # Ground Truth用語の頻度分布を収集
+        gt_frequencies = []
+        for term in self.gt_terms:
+            if term in extracted_dict:
+                info = extracted_dict[term]
+                freq = info.get('frequency', 0)
+                if freq > 0:
+                    gt_frequencies.append(freq)
+
+        # 頻度別のGround Truth用語数をカウント
+        gt_freq_distribution = {
+            '1回': 0,
+            '2回': 0,
+            '3-5回': 0,
+            '6-10回': 0,
+            '11回以上': 0
+        }
+
+        for freq in gt_frequencies:
+            if freq == 1:
+                gt_freq_distribution['1回'] += 1
+            elif freq == 2:
+                gt_freq_distribution['2回'] += 1
+            elif 3 <= freq <= 5:
+                gt_freq_distribution['3-5回'] += 1
+            elif 6 <= freq <= 10:
+                gt_freq_distribution['6-10回'] += 1
+            else:
+                gt_freq_distribution['11回以上'] += 1
+
+        return {
+            'all_changes': gt_score_changes,
+            'frequency_impact': {
+                label: {
+                    'mean_ratio': float(np.mean(ratios)) if ratios else 1.0,
+                    'median_ratio': float(np.median(ratios)) if ratios else 1.0,
+                    'count': len(ratios)
+                }
+                for label, ratios in freq_impact.items()
+            },
+            'gt_frequencies': gt_frequencies,
+            'gt_freq_distribution': gt_freq_distribution
         }
 
     def _find_missed_terms(self) -> List[Dict]:
