@@ -149,9 +149,10 @@ sequenceDiagram
 - **目的**: 技術文書で重要な略語を優先
 
 ### Phase 4: SemReRank
-- **グラフ構築**: 用語間の意味的類似度
-- **アルゴリズム**: PageRank
-- **最終スコア**: `base_score × (1 + α × pagerank_score)`
+- **グラフ構築**: 用語間の意味的類似度（relmin=0.5, reltop=0.15）
+- **アルゴリズム**: Personalized PageRank（alpha=0.85）
+- **シード選定**: 上位15%（seed_percentile=15.0）
+- **最終スコア**: `base_score × (1 + importance_score)`
 
 ### Phase 5: 表記ゆれ・関連語検出
 #### 表記ゆれ (variants)

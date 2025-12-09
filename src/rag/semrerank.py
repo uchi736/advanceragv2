@@ -37,30 +37,37 @@ class EmbeddingCache:
         self,
         embeddings,  # AzureOpenAIEmbeddings
         connection_string: str,
-        cache_table: str = "term_embeddings"
+        cache_table: str = "term_embeddings",
+        config = None  # Config instance
     ):
         """
         Args:
             embeddings: AzureOpenAIEmbeddingsインスタンス
             connection_string: PostgreSQL接続文字列
             cache_table: キャッシュテーブル名
+            config: Configインスタンス（埋め込み次元数を取得）
         """
         self.embeddings = embeddings
         self.connection_string = connection_string
         self.cache_table = cache_table
+        self.config = config
         self.engine: Engine = create_engine(connection_string)
         self._init_cache_table()
 
     def _init_cache_table(self):
         """キャッシュテーブルの初期化"""
         try:
+            # 埋め込み次元数を動的に取得
+            if self.config and hasattr(self.config, 'get_embedding_dimensions'):
+                dimensions = self.config.get_embedding_dimensions()
+            else:
+                dimensions = 1536  # デフォルト
+
             with self.engine.connect() as conn:
-                # 埋め込み次元数を取得（動的に設定）
-                # Azure OpenAI text-embedding-3-small: 1536次元
                 conn.execute(text(f"""
                     CREATE TABLE IF NOT EXISTS {self.cache_table} (
                         term TEXT PRIMARY KEY,
-                        embedding VECTOR(1536),
+                        embedding VECTOR({dimensions}),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """))
@@ -341,7 +348,8 @@ class SemReRank:
         relmin: float = 0.5,
         reltop: float = 0.15,
         alpha: float = 0.85,
-        seed_percentile: float = 15.0
+        seed_percentile: float = 15.0,
+        config = None  # Config instance
     ):
         """
         Args:
@@ -351,8 +359,9 @@ class SemReRank:
             reltop: 上位関連語の割合（デフォルト0.15 = 15%）
             alpha: PageRankダンピング係数（デフォルト0.85）
             seed_percentile: シード選定の上位何%（デフォルト15.0）
+            config: Configインスタンス（埋め込み次元数を取得）
         """
-        self.embedding_cache = EmbeddingCache(embeddings, connection_string)
+        self.embedding_cache = EmbeddingCache(embeddings, connection_string, config=config)
         self.relmin = relmin
         self.reltop = reltop
         self.alpha = alpha
@@ -368,7 +377,7 @@ class SemReRank:
         candidates: List[str],
         base_scores: Dict[str, float],
         seed_scores: Dict[str, float]
-    ) -> Dict[str, float]:
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """
         SemRe-Rankによるスコア強化
 
@@ -378,11 +387,11 @@ class SemReRank:
             seed_scores: シード選定用スコア（Stage A）
 
         Returns:
-            改訂後のスコア
+            (改訂後のスコア, importance_scores)のタプル
         """
         if not candidates or not base_scores:
             logger.warning("No candidates or base scores provided")
-            return base_scores
+            return base_scores, {}
 
         logger.info(f"Enhancing scores for {len(candidates)} candidates with SemRe-Rank")
 
@@ -391,28 +400,28 @@ class SemReRank:
 
         if len(embeddings) < 2:
             logger.warning("Not enough embeddings, returning base scores")
-            return base_scores
+            return base_scores, {}
 
         # 2. 意味的関連性グラフ構築
         graph = build_semantic_graph(embeddings, self.relmin, self.reltop)
 
         if graph.number_of_nodes() < 2:
             logger.warning("Graph too small, returning base scores")
-            return base_scores
+            return base_scores, {}
 
         # 3. シード選定（上位N%）
         seeds = select_seeds_by_percentile(seed_scores, self.seed_percentile)
 
         if not seeds:
             logger.warning("No seeds selected, returning base scores")
-            return base_scores
+            return base_scores, {}
 
         # 4. Personalized PageRank実行
         importance_scores = personalized_pagerank(graph, seeds, self.alpha)
 
         if not importance_scores:
             logger.warning("PageRank failed, returning base scores")
-            return base_scores
+            return base_scores, {}
 
         # 5. スコア改訂
         enhanced_scores = revise_scores(base_scores, importance_scores)
@@ -422,7 +431,7 @@ class SemReRank:
             f"{len(enhanced_scores)} scores enhanced"
         )
 
-        return enhanced_scores
+        return enhanced_scores, importance_scores
 
 
 __all__ = [

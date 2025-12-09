@@ -476,10 +476,10 @@ base_scores = {
 #### 1. シード選定
 **基準**: `seed_scores`の上位N%
 
-**パラメータ**: `seed_percentile` (デフォルト: 30%)
+**パラメータ**: `seed_percentile` (デフォルト: 15.0%)
 
 ```python
-n_seeds = max(10, int(len(candidates) * 0.3))
+n_seeds = max(1, int(len(candidates) * 0.15))
 seed_terms = sorted(candidates, key=lambda t: seed_scores[t], reverse=True)[:n_seeds]
 ```
 
@@ -505,25 +505,23 @@ for i, term1 in enumerate(candidates):
             graph[term1][term2] = similarity_matrix[i][j]
 ```
 
-#### 3. PageRank実行
-**初期値**: シード用語に高い初期スコア
+#### 3. Personalized PageRank実行
+**personalizationベクトル**: シード用語に1.0、他は0.0
 
 **反復計算**:
 ```
-PR(t) = (1 - d) + d × Σ (PR(u) × w(u, t) / Σ w(u, v))
+PR(t) = (1 - α) + α × Σ (PR(u) × w(u, t) / Σ w(u, v))
 ```
 
-- `d`: ダンピング係数 (0.85)
+- `α`: ダンピング係数 (0.85)
 - `w(u, t)`: エッジの重み（類似度）
 
-**収束条件**: 変化量 < 0.001 または 最大100回反復
+**収束条件**: tol=1e-06 または 最大100回反復
 
 #### 4. 最終スコア計算
 ```
-enhanced_score = base_score × (1 + α × pagerank_score)
+enhanced_score = base_score × (1 + importance_score)
 ```
-
-- `α`: PageRankの影響度 (デフォルト: 0.3)
 
 **実装**: [semrerank.py](../src/rag/semrerank.py)
 
@@ -531,9 +529,9 @@ enhanced_score = base_score × (1 + α × pagerank_score)
 
 ```python
 enhanced_scores = {
-    "ガス軸受": 0.936,      # 0.78 × (1 + 0.3 × 0.65) = 0.936
-    "電動ターボ機械": 0.842,  # "ガス軸受"と高類似度
-    "BMS": 0.623,           # 孤立用語（類似度低）
+    "ガス軸受": 1.287,      # 0.78 × (1 + 0.65) = 1.287
+    "電動ターボ機械": 1.248,  # "ガス軸受"と高類似度
+    "BMS": 0.858,           # 孤立用語（類似度低）
     # ...
 }
 ```

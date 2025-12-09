@@ -16,7 +16,14 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(del:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(if not exist .streamlit mkdir .streamlit)",
+      "Bash(myenvScriptspython.exe:*)",
+      "Bash(dir /b docs)",
+      "Bash(dir /s /b c:workRAGadvancedrag2)",
+      "Bash(dir /b c:workRAGadvancedrag2)",
+      "Bash(dir:*)",
+      "Bash(myenv/Scripts/pip install:*)"
     ],
     "deny": [],
     "ask": []

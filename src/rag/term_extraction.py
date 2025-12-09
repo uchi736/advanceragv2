@@ -280,7 +280,8 @@ class TermExtractor:
                     relmin=getattr(config, 'semrerank_relmin', 0.5),
                     reltop=getattr(config, 'semrerank_reltop', 0.15),
                     alpha=getattr(config, 'semrerank_alpha', 0.85),
-                    seed_percentile=getattr(config, 'semrerank_seed_percentile', 15.0)
+                    seed_percentile=getattr(config, 'semrerank_seed_percentile', 15.0),
+                    config=config
                 )
                 logger.info("SemReRank initialized successfully")
             except Exception as e:
@@ -601,10 +602,11 @@ class TermExtractor:
         logger.info(f"Applied bonus to {abbreviation_count} abbreviations")
 
         # 4. SemReRank適用（オプション）
+        importance_scores = {}
         if self.semrerank:
             logger.info("Applying SemReRank enhancement")
             try:
-                enhanced_scores = self.semrerank.enhance_scores(
+                enhanced_scores, importance_scores = self.semrerank.enhance_scores(
                     candidates=list(candidates_for_semrerank.keys()),
                     base_scores=base_scores_for_semrerank,
                     seed_scores=seed_scores_for_semrerank
@@ -612,9 +614,11 @@ class TermExtractor:
             except Exception as e:
                 logger.error(f"SemReRank failed: {e}. Using base scores.")
                 enhanced_scores = base_scores
+                importance_scores = {}
         else:
             logger.info("SemReRank disabled, using base scores")
             enhanced_scores = base_scores
+            importance_scores = {}
 
         # 5. 類義語・関連語検出
         logger.info("Detecting synonyms (variants)")
@@ -798,6 +802,9 @@ class TermExtractor:
                 "frequency": freq,
                 "tfidf_score": tfidf_scores.get(term, 0.0),
                 "cvalue_score": cvalue_scores.get(term, 0.0),
+                "base_score": base_scores_for_semrerank.get(term, 0.0),
+                "revised_score": enhanced_scores.get(term, 0.0),
+                "importance_score": importance_scores.get(term, 0.0),
                 "text": context  # 周辺テキストを追加
             })
 

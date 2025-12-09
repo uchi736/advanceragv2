@@ -94,8 +94,9 @@
 │   │   ├── evaluator.py        # 評価システムモジュール
 │   │   ├── ingestion.py        # ドキュメントの取り込みと処理
 │   │   ├── term_extraction.py  # 専門用語抽出と類義語検出（統合版）
-│   │   ├── advanced_term_extraction.py  # SemReRank実装
+│   │   ├── advanced_term_extraction.py  # SemReRankパイプライン実装
 │   │   ├── semrerank.py        # Personalized PageRankアルゴリズム
+│   │   ├── extraction_logger.py # 抽出ログ機能
 │   │   ├── retriever.py        # ハイブリッド検索リトリーバー
 │   │   ├── sql_handler.py      # Text-to-SQL機能の処理
 │   │   ├── text_processor.py   # 日本語テキスト処理
@@ -108,6 +109,7 @@
 │   │   ├── dictionary_tab.py   # 辞書管理画面
 │   │   ├── documents_tab.py    # ドキュメント管理画面
 │   │   ├── evaluation_tab.py   # 評価システム画面
+│   │   ├── knowledge_graph_tab.py # ナレッジグラフ画面
 │   │   ├── settings_tab.py     # 設定画面
 │   │   ├── sidebar.py          # サイドバー
 │   │   └── state.py            # セッション状態管理
@@ -118,17 +120,35 @@
 │   │   ├── extract_semantic_synonyms.py    # 意味ベース類義語抽出
 │   │   ├── fix_bidirectional_synonyms.py   # 双方向類義語修正
 │   │   └── knowledge_graph/                # ナレッジグラフ機能
+│   │       ├── setup_database.py           # DBセットアップ
+│   │       ├── graph_builder.py            # グラフ構築
+│   │       ├── graph_visualizer.py         # グラフ可視化
+│   │       └── query_expander.py           # クエリ拡張
 │   └── utils/                  # ユーティリティ関数
 │       ├── helpers.py          # ヘルパー関数
-│       ├── style.py            # UIスタイル設定
-│       └── profiler.py         # パフォーマンスプロファイリング
+│       └── style.py            # UIスタイル設定
 ├── docs/                       # ドキュメント
-│   ├── evaluation/             # 評価関連ドキュメント
+│   ├── features/               # 機能別ドキュメント
+│   │   ├── term-extraction/    # 専門用語抽出
+│   │   ├── evaluation/         # 評価システム
+│   │   └── knowledge-graph/    # ナレッジグラフ
+│   ├── guides/                 # ガイド
+│   ├── research/               # 研究資料
 │   └── architecture/           # アーキテクチャドキュメント
+├── data/                       # データファイル
 ├── output/                     # 出力ファイル
 │   ├── images/                 # 生成された画像
 │   └── terms.json              # 抽出された専門用語
-└── old/                        # アーカイブ（不要なファイル）
+├── examples/                   # 使用例
+│   └── chromadb_usage.py       # ChromaDB使用例
+├── scripts/                    # ユーティリティスクリプト
+│   └── vector_store_migration.py # ベクトルストア移行
+├── migrations/                 # DBマイグレーション
+├── test_data/                  # テストデータ
+│   ├── sample_docs/            # サンプルドキュメント
+│   ├── ground_truth.json       # 正解データ
+│   └── extracted_terms.json    # 抽出結果
+└── myenv/                      # Python仮想環境
 ```
 
 ## インストール手順
@@ -440,10 +460,10 @@ Phase 2: 統計的スコアリング（全体統合）
 
 Phase 3: SemReRank適用（候補数制限なし）
   ├─ 埋め込みキャッシュ取得（pgvector）
-  ├─ 意味的関連性グラフ構築
+  ├─ 意味的関連性グラフ構築（relmin=0.5, reltop=0.15）
   ├─ シード選定（上位15%、C-value重視）
-  ├─ Personalized PageRank実行
-  └─ スコア改訂（全候補）
+  ├─ Personalized PageRank実行（alpha=0.85）
+  └─ スコア改訂: enhanced_score = base_score × (1 + importance)
 
 Phase 4: 軽量LLMフィルタ（定義生成前、コスト削減）
   ├─ 略語を自動通過（問答無用で定義生成へ）
@@ -472,12 +492,15 @@ C-value(a) = log₂(|a|) × freq(a) - (1/|Ta|) × Σ freq(b)
 
 **Personalized PageRank**:
 ```python
-PR(v) = (1 - α) × p(v) + α × Σ (PR(u) / deg(u))
+PR(v) = (1 - α) × p(v) + α × Σ (PR(u) × w(u,v) / Σw(u,w))
 ```
+- α: ダンピング係数（0.85）
+- p(v): personalizationベクトル（シードに1.0、他は0.0）
+- w(u,v): エッジの重み（コサイン類似度）
 
 **スコア改訂**:
 ```python
-final_score = base_score × (1 + importance / avg_importance - 1)
+enhanced_score = base_score × (1 + importance_score)
 ```
 
 詳細は [Term_Extraction_Processing_Logic_Documentation.md](Term_Extraction_Processing_Logic_Documentation.md) を参照してください。
@@ -593,11 +616,20 @@ python src/scripts/import_terms_to_db.py
    - バッチ処理による効率的な処理
    - PostgreSQLによる永続化
 
-## 📚 ドキュメント
+## 📚 詳細ドキュメント
 
-- **[Term_Extraction_Processing_Logic_Documentation.md](Term_Extraction_Processing_Logic_Documentation.md)**: 専門用語抽出システムの完全な処理ロジック（2,500行の詳細ドキュメント）
-- **[SemReRank_Complete_Implementation_Guide.md](SemReRank_Complete_Implementation_Guide.md)**: SemReRank実装ガイド
-- **docs/**: 各種機能のドキュメント
+### 専門用語抽出
+- **[docs/term_extraction_detailed.md](docs/term_extraction_detailed.md)**: 完全な処理ロジック詳細
+- **[docs/term_extraction_flow.md](docs/term_extraction_flow.md)**: 処理フローの概要
+- **[docs/features/term-extraction/](docs/features/term-extraction/)**: 機能別ドキュメント
+
+### システムガイド
+- **[LOGGING_GUIDE.md](LOGGING_GUIDE.md)**: ロギング機能のガイド
+- **[docs/guides/](docs/guides/)**: Azure OpenAI、日本語NLP、ベクトル検索など
+
+### その他
+- **[docs/features/evaluation/](docs/features/evaluation/)**: 評価システムドキュメント
+- **[docs/features/knowledge-graph/](docs/features/knowledge-graph/)**: ナレッジグラフドキュメント
 
 ## 🔬 参考文献
 

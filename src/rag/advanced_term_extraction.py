@@ -163,6 +163,7 @@ class AdvancedStatisticalExtractor:
             # 略語パターン（SFOC、MPPT制御など）
             r'\b[A-Z]{2,5}:\s*[A-Z]',  # SFOC: Specific形式
             r'\b[A-Z]{2,5}\b',  # シンプルな略語（2-5文字の大文字）BMS, AVR, EMS, SFOC対応
+            r'(?<![A-Za-z0-9])[A-Z][0-9]{1,2}(?![A-Za-z0-9])',  # 英字1文字+数字1-2桁（G0, C1, T10など）
             r'\b[A-Z]{2,5}(制御|装置|システム|方式|機能|技術|モード)\b',  # 略語+用語の複合語（MPPT制御など）
 
             # 数値+単位の仕様
@@ -194,21 +195,29 @@ class AdvancedStatisticalExtractor:
         # 1. 正規表現パターンマッチング（スパン付き）
         if self.use_regex_patterns:
             pattern_spans = self._extract_by_patterns_with_spans(text)
+            pattern_count = sum(len(spans) for spans in pattern_spans.values())
+            logger.info(f"[1/4] 正規表現パターン: {len(pattern_spans)}種類、{pattern_count}個の出現")
             for term, spans in pattern_spans.items():
                 candidates_with_spans[term].update(spans)
 
         # 2. Mode C: 自然な複合語
         mode_c_spans = self._extract_with_mode_c_with_spans(text)
+        mode_c_count = sum(len(spans) for spans in mode_c_spans.values())
+        logger.info(f"[2/4] Mode C（長単位）: {len(mode_c_spans)}種類、{mode_c_count}個の出現")
         for term, spans in mode_c_spans.items():
             candidates_with_spans[term].update(spans)
 
         # 3. Mode A + n-gram
         ngram_spans = self._extract_ngrams_with_spans(text)
+        ngram_count = sum(len(spans) for spans in ngram_spans.values())
+        logger.info(f"[3/4] Mode A + n-gram: {len(ngram_spans)}種類、{ngram_count}個の出現")
         for term, spans in ngram_spans.items():
             candidates_with_spans[term].update(spans)
 
         # 4. 複合名詞
         compound_spans = self._extract_compound_nouns_with_spans(text)
+        compound_count = sum(len(spans) for spans in compound_spans.values())
+        logger.info(f"[4/4] 複合名詞: {len(compound_spans)}種類、{compound_count}個の出現")
         for term, spans in compound_spans.items():
             candidates_with_spans[term].update(spans)
 
@@ -227,12 +236,33 @@ class AdvancedStatisticalExtractor:
         Returns:
             候補用語とユニークなスパン数（真の頻度）
         """
+        # 頻度フィルタ前の統計
+        freq_distribution = defaultdict(int)
+        for term, spans in candidates_with_spans.items():
+            freq = len(spans)
+            freq_distribution[freq] += 1
+
         # 最小頻度フィルタ
         filtered = {
             term: len(spans)
             for term, spans in candidates_with_spans.items()
             if len(spans) >= self.min_frequency
         }
+
+        # フィルタされた用語を記録
+        filtered_out = {
+            term: len(spans)
+            for term, spans in candidates_with_spans.items()
+            if len(spans) < self.min_frequency
+        }
+
+        if filtered_out:
+            logger.info(f"頻度フィルタで除外: {len(filtered_out)}個（頻度<{self.min_frequency}）")
+            # 頻度1の用語例を記録
+            freq_1_terms = [term for term, freq in filtered_out.items() if freq == 1]
+            if freq_1_terms:
+                sample = freq_1_terms[:10]
+                logger.debug(f"  頻度1の除外例: {', '.join(sample)}{'...' if len(freq_1_terms) > 10 else ''}")
 
         return filtered
 
@@ -246,11 +276,23 @@ class AdvancedStatisticalExtractor:
         Returns:
             候補用語と出現頻度の辞書（スパン重複排除済み）
         """
+        logger.info("=" * 70)
+        logger.info("候補用語抽出開始")
+        logger.info("=" * 70)
+
         # スパン付きで抽出
         candidates_with_spans = self.extract_candidates_with_spans(text)
 
+        # 抽出手法別のカウント
+        total_before_filter = sum(len(spans) for spans in candidates_with_spans.values())
+        logger.info(f"抽出された候補（重複含む）: {total_before_filter}個")
+        logger.info(f"ユニークな候補用語数: {len(candidates_with_spans)}個")
+
         # スパン重複排除して頻度計算
         candidates = self.merge_candidates_by_spans(candidates_with_spans)
+
+        logger.info(f"頻度フィルタ後（min_frequency={self.min_frequency}）: {len(candidates)}個")
+        logger.info("=" * 70)
 
         return candidates
 

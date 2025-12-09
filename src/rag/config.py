@@ -2,6 +2,13 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+# 埋め込みモデルの次元数マッピング
+EMBEDDING_MODEL_DIMENSIONS = {
+    'text-embedding-ada-002': 1536,
+    'text-embedding-3-small': 1536,
+    'text-embedding-3-large': 3072
+}
+
 @dataclass
 class Config:
     # Database settings (populated in __post_init__)
@@ -131,3 +138,10 @@ class Config:
     use_sentence_boundary_for_ngrams: bool = True
     max_related_terms_per_candidate: int = 5
     min_related_term_length: int = 4
+
+    def get_embedding_dimensions(self) -> int:
+        """現在の埋め込みモデルの次元数を取得"""
+        return EMBEDDING_MODEL_DIMENSIONS.get(
+            self.embedding_model_identifier,
+            1536  # デフォルト
+        )

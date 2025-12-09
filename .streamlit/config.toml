@@ -1,0 +1,32 @@
+# Streamlit設定ファイル - パフォーマンス最適化
+
+[server]
+# WebSocket圧縮を有効化してデータ転送量を削減
+enableWebsocketCompression = true
+
+# 最大アップロードサイズ（MB）
+maxUploadSize = 200
+
+# 最大メッセージサイズ（MB） - WebSocketエラー対策
+maxMessageSize = 200
+
+# サーバーのタイムアウト設定（秒）
+enableXsrfProtection = true
+
+[browser]
+# 使用統計の収集を無効化（プライバシー保護 & パフォーマンス向上）
+gatherUsageStats = false
+
+[theme]
+# テーマ設定（オプション）
+primaryColor = "#4ECDC4"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+
+[runner]
+# 自動再実行の設定
+fastReruns = true
+
+# コマンド実行のタイムアウト
+magicEnabled = true
