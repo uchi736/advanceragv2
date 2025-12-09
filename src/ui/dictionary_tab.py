@@ -10,7 +10,7 @@ from src.rag.term_extraction import JargonDictionaryManager
 from src.rag.config import Config
 from src.utils.helpers import render_term_card
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)  # TTLを300秒から60秒に短縮
 def get_all_terms_cached(_jargon_manager, collection_name: str):
     return pd.DataFrame(_jargon_manager.get_all_terms())
 

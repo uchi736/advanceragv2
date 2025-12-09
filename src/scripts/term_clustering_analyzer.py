@@ -780,9 +780,23 @@ class TermClusteringAnalyzer:
             from rag.config import Config
             cfg = Config()
             collection_name = cfg.collection_name
-            logger.warning(f"collection_name not provided, using default: {collection_name}")
+            logger.warning(f"⚠️ collection_name not provided, using default: '{collection_name}'")
+        else:
+            logger.info(f"✓ Using provided collection_name: '{collection_name}'")
 
         engine = create_engine(self.connection_string)
+
+        # データベース状態確認（UPDATE前）
+        with engine.connect() as conn:
+            check_result = conn.execute(
+                text(f"SELECT COUNT(*) FROM {self.jargon_table_name} WHERE collection_name = :cname"),
+                {"cname": collection_name}
+            ).scalar()
+            logger.info(f"📊 Target collection '{collection_name}' has {check_result} terms in database before update")
+
+            if check_result == 0:
+                logger.error(f"❌ No terms found in collection '{collection_name}' - UPDATE will fail!")
+                return 0
 
         updated_count = 0
         synonyms_count = 0
@@ -820,7 +834,7 @@ class TermClusteringAnalyzer:
                     # 3. 無条件で上書き（COALESCEなし）
                     # Note: 'aliases'列に類義語を保存（semantic_synonymsは存在しない）
                     # WHERE句を複合キーに修正
-                    conn.execute(
+                    result = conn.execute(
                         text(f"""
                             UPDATE {self.jargon_table_name}
                             SET aliases = :synonyms,
@@ -834,7 +848,14 @@ class TermClusteringAnalyzer:
                             "domain": domain
                         }
                     )
-                    updated_count += 1
+
+                    # 実際に更新された行数を確認
+                    if result.rowcount == 0:
+                        logger.warning(f"⚠️ UPDATE failed for term='{term}', collection='{collection_name}' (0 rows updated - term not found in DB)")
+                    else:
+                        updated_count += 1
+                        logger.debug(f"✓ Updated term='{term}': domain='{domain}', synonyms={len(synonym_terms)} ({synonym_terms})")
+
                 except Exception as e:
                     logger.error(f"Error updating term '{term}': {e}", exc_info=True)
 
