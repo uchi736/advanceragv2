@@ -309,7 +309,10 @@ def render_term_extraction(rag_system, jargon_manager):
         key="term_output_json"
     )
 
-    if st.button("🚀 用語を抽出・生成", type="primary", use_container_width=True, key="run_term_extraction", disabled=not has_vector_data):
+    # ボタンの無効化条件: 「登録済みドキュメントから抽出」モードかつベクトルストアにデータなし
+    button_disabled = (input_mode == "登録済みドキュメントから抽出" and not has_vector_data)
+
+    if st.button("🚀 用語を抽出・生成", type="primary", use_container_width=True, key="run_term_extraction", disabled=button_disabled):
         temp_dir_path = None
         try:
             if input_mode == "登録済みドキュメントから抽出":
