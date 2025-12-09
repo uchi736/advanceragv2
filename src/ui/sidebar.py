@@ -22,10 +22,45 @@ def render_sidebar(rag_system, env_defaults):
     with st.sidebar:
         st.markdown("<h2 style='color: var(--text-primary);'>⚙️ Configuration</h2>", unsafe_allow_html=True)
         if rag_system:
-            st.success(f"✅ System Online (Azure) - Collection: **{rag_system.config.collection_name}**")
+            st.success(f"✅ System Online (Azure)")
         else:
             st.warning("⚠️ System Offline")
-        
+
+        # Collection switcher
+        if rag_system:
+            st.markdown("---")
+            st.markdown("#### 📁 コレクション切り替え")
+
+            # Get available collections
+            available_collections = rag_system.get_available_collections()
+            current_collection = rag_system.config.collection_name
+
+            # Find current index
+            try:
+                current_index = available_collections.index(current_collection)
+            except ValueError:
+                current_index = 0
+
+            # Collection selector
+            selected_collection = st.selectbox(
+                "コレクション",
+                options=available_collections,
+                index=current_index,
+                key="collection_selector",
+                help="文書・辞書・検索の対象となるコレクションを選択します"
+            )
+
+            # Switch collection if changed
+            if selected_collection != current_collection:
+                with st.spinner(f"コレクション '{selected_collection}' に切り替え中..."):
+                    success = rag_system.switch_collection(selected_collection)
+                    if success:
+                        st.success(f"✅ '{selected_collection}' に切り替えました")
+                        st.rerun()
+                    else:
+                        st.error("❌ コレクションの切り替えに失敗しました")
+
+        st.markdown("---")
         st.info("すべての設定は「詳細設定」タブで行えます。")
 
         # Add search type selection

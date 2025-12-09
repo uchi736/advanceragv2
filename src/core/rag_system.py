@@ -893,3 +893,83 @@ class RAGSystem:
         if self.evaluator is None or self.evaluator.last_results is None:
             return False
         return self.evaluator.export_results(self.evaluator.last_results, export_path)
+
+    def get_available_collections(self) -> List[str]:
+        """
+        Get list of available collection names from the database
+
+        Returns:
+            List of unique collection names
+        """
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT DISTINCT collection_name
+                    FROM langchain_pg_embedding
+                    ORDER BY collection_name
+                """))
+                collections = [row[0] for row in result if row[0]]
+                return collections if collections else [self.config.collection_name]
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to get available collections: {e}")
+            return [self.config.collection_name]
+
+    def switch_collection(self, new_collection_name: str) -> bool:
+        """
+        Switch to a different collection without reinitializing the entire system
+
+        Args:
+            new_collection_name: Name of the collection to switch to
+
+        Returns:
+            True if switch was successful, False otherwise
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if new_collection_name == self.config.collection_name:
+            logger.info(f"Already using collection: {new_collection_name}")
+            return True
+
+        try:
+            logger.info(f"Switching collection from '{self.config.collection_name}' to '{new_collection_name}'")
+
+            # Update config
+            self.config.collection_name = new_collection_name
+
+            # Recreate vector store with new collection name
+            from langchain_community.vectorstores.pgvector import DistanceStrategy
+            distance_strategy_str = getattr(self.config, 'distance_strategy', 'COSINE').upper()
+            distance_strategy_map = {
+                'COSINE': DistanceStrategy.COSINE,
+                'EUCLIDEAN': DistanceStrategy.EUCLIDEAN,
+                'MAX_INNER_PRODUCT': DistanceStrategy.MAX_INNER_PRODUCT
+            }
+            distance_strategy = distance_strategy_map.get(distance_strategy_str, DistanceStrategy.COSINE)
+
+            self.vector_store = PGVector(
+                connection_string=self.connection_string,
+                embedding_function=self.embeddings,
+                collection_name=new_collection_name,
+                distance_strategy=distance_strategy
+            )
+
+            # Update retriever with new vector store
+            self.retriever.vector_store = self.vector_store
+            self.retriever.config_params.collection_name = new_collection_name
+
+            # Update ingestion handler
+            self.ingestion_handler.vector_store = self.vector_store
+            self.ingestion_handler.config.collection_name = new_collection_name
+
+            # Update sql handler
+            self.sql_handler.config.collection_name = new_collection_name
+
+            logger.info(f"Successfully switched to collection: {new_collection_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to switch collection: {e}")
+            return False
