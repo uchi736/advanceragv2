@@ -100,11 +100,6 @@ class JargonDictionaryManager:
                 )
             """))
 
-            # インデックス作成
-            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_collection ON {self.table_name}(collection_name)"))
-            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_term ON {self.table_name} (LOWER(term))"))
-            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_aliases ON {self.table_name} USING GIN(aliases)"))
-
             # 既存テーブルのスキーマをチェック
             result = conn.execute(text(f"""
                 SELECT column_name
@@ -132,6 +127,11 @@ class JargonDictionaryManager:
             for col in columns_to_drop:
                 logger.info(f"Dropping obsolete column: {col} from {self.table_name}")
                 conn.execute(text(f"ALTER TABLE {self.table_name} DROP COLUMN IF EXISTS {col}"))
+
+            # インデックス作成（マイグレーション後に実行）
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_collection ON {self.table_name}(collection_name)"))
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_term ON {self.table_name} (LOWER(term))"))
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_aliases ON {self.table_name} USING GIN(aliases)"))
 
             conn.commit()
 
