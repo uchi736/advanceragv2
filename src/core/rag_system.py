@@ -567,6 +567,58 @@ class RAGSystem:
 
         return self.ingestion_handler.delete_document_by_id(doc_id)
 
+    def delete_collection(self, collection_name: str) -> tuple[bool, str]:
+        """Delete an entire collection and all its documents.
+
+        Args:
+            collection_name: Collection name to delete
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        try:
+            with self.engine.connect() as conn, conn.begin():
+                # Get collection UUID
+                result = conn.execute(
+                    text("SELECT uuid FROM langchain_pg_collection WHERE name = :name"),
+                    {"name": collection_name}
+                )
+                collection_row = result.fetchone()
+
+                if not collection_row:
+                    return False, f"コレクション '{collection_name}' が見つかりません"
+
+                collection_id = collection_row.uuid
+
+                # Delete embeddings
+                result = conn.execute(
+                    text("DELETE FROM langchain_pg_embedding WHERE collection_id = :cid"),
+                    {"cid": collection_id}
+                )
+                embeddings_deleted = result.rowcount
+
+                # Delete document chunks
+                result = conn.execute(
+                    text("DELETE FROM document_chunks WHERE collection_name = :name"),
+                    {"name": collection_name}
+                )
+                chunks_deleted = result.rowcount
+
+                # Delete collection
+                conn.execute(
+                    text("DELETE FROM langchain_pg_collection WHERE uuid = :cid"),
+                    {"cid": collection_id}
+                )
+
+                return True, (
+                    f"コレクション '{collection_name}' を削除しました\n"
+                    f"- ベクトル: {embeddings_deleted}個\n"
+                    f"- チャンク: {chunks_deleted}個"
+                )
+
+        except Exception as e:
+            return False, f"削除中にエラーが発生しました: {type(e).__name__} - {e}"
+
     def ingest_documents(self, paths: List[str]) -> None:
         """Ingest documents into the vector store.
 

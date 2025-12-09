@@ -128,5 +128,51 @@ def render_documents_tab(rag_system):
                         st.error(message)
                 except Exception as e:
                     st.error(f"ドキュメント削除中にエラーが発生しました: {type(e).__name__} - {e}")
+
+        st.markdown("---")
+        st.markdown("### 🗂️ コレクション削除")
+        st.warning("⚠️ **危険:** コレクション全体を削除します。すべてのドキュメント、チャンク、ベクトルが削除されます。")
+
+        # Get all collections
+        from sqlalchemy import text as sql_text
+        with rag_system.engine.connect() as conn:
+            result = conn.execute(sql_text("SELECT name FROM langchain_pg_collection ORDER BY name"))
+            all_collections = [row.name for row in result]
+
+        if all_collections:
+            collection_to_delete = st.selectbox(
+                "削除するコレクションを選択:",
+                ["選択してください..."] + all_collections,
+                key="collection_delete_selectbox"
+            )
+
+            if collection_to_delete != "選択してください...":
+                st.error(f"🚨 **重要:** コレクション '{collection_to_delete}' 内のすべてのデータが完全に削除されます。この操作は元に戻せません。")
+
+                # Double confirmation
+                confirm_text = st.text_input(
+                    f"削除を確認するには '{collection_to_delete}' と入力してください:",
+                    key="collection_delete_confirm"
+                )
+
+                if st.button(
+                    f"コレクション '{collection_to_delete}' を完全削除",
+                    type="secondary",
+                    disabled=(confirm_text != collection_to_delete),
+                    key="collection_delete_button"
+                ):
+                    try:
+                        with st.spinner(f"コレクション削除中: {collection_to_delete}"):
+                            success, message = rag_system.delete_collection(collection_to_delete)
+                        if success:
+                            st.success(message)
+                            time.sleep(1)
+                            st.rerun()  # Reload page to reflect changes
+                        else:
+                            st.error(message)
+                    except Exception as e:
+                        st.error(f"コレクション削除中にエラーが発生しました: {type(e).__name__} - {e}")
+        else:
+            st.info("削除可能なコレクションがありません。")
     else:
         st.info("まだドキュメントが登録されていません。上のセクションからアップロードしてください。")
