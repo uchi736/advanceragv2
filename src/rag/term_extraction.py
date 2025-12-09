@@ -44,6 +44,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 from src.rag.pdf_processors import AzureDocumentIntelligenceProcessor
+from .extraction_logger import ExtractionLogger
 
 
 # ========== Pydantic Models ==========
@@ -73,9 +74,10 @@ class _InMemoryLoader:
 class JargonDictionaryManager:
     """専門用語辞書の管理クラス"""
 
-    def __init__(self, connection_string: str, table_name: str = "jargon_dictionary", engine: Optional[Engine] = None):
+    def __init__(self, connection_string: str, table_name: str = "jargon_dictionary", collection_name: str = "documents", engine: Optional[Engine] = None):
         self.connection_string = connection_string
         self.table_name = table_name
+        self.collection_name = collection_name
         self.engine: Engine = engine or create_engine(connection_string)
         self._init_jargon_table()
 
@@ -86,21 +88,24 @@ class JargonDictionaryManager:
             conn.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
                     id SERIAL PRIMARY KEY,
-                    term TEXT UNIQUE NOT NULL,
+                    collection_name VARCHAR(255) NOT NULL DEFAULT 'documents',
+                    term TEXT NOT NULL,
                     definition TEXT NOT NULL,
                     domain TEXT,
                     aliases TEXT[],
                     related_terms TEXT[],
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(collection_name, term)
                 )
             """))
 
             # インデックス作成
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_collection ON {self.table_name}(collection_name)"))
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_term ON {self.table_name} (LOWER(term))"))
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_jargon_aliases ON {self.table_name} USING GIN(aliases)"))
 
-            # 既存テーブルのスキーマをチェックして不要なカラムを削除
+            # 既存テーブルのスキーマをチェック
             result = conn.execute(text(f"""
                 SELECT column_name
                 FROM information_schema.columns
@@ -109,9 +114,18 @@ class JargonDictionaryManager:
 
             existing_columns = {row[0] for row in result}
             expected_columns = {
-                'id', 'term', 'definition', 'domain',
+                'id', 'collection_name', 'term', 'definition', 'domain',
                 'aliases', 'related_terms', 'created_at', 'updated_at'
             }
+
+            # collection_name カラムがない場合は追加（マイグレーション）
+            if 'collection_name' not in existing_columns:
+                logger.info(f"Adding collection_name column to {self.table_name}")
+                conn.execute(text(f"ALTER TABLE {self.table_name} ADD COLUMN collection_name VARCHAR(255) NOT NULL DEFAULT 'documents'"))
+
+                # 既存のUNIQUE制約を削除して新しい複合UNIQUE制約を追加
+                conn.execute(text(f"ALTER TABLE {self.table_name} DROP CONSTRAINT IF EXISTS {self.table_name}_term_key"))
+                conn.execute(text(f"ALTER TABLE {self.table_name} ADD CONSTRAINT {self.table_name}_collection_term_key UNIQUE(collection_name, term)"))
 
             # 不要なカラムを削除（confidence_score等の古いカラム）
             columns_to_drop = existing_columns - expected_columns
@@ -128,15 +142,16 @@ class JargonDictionaryManager:
             with self.engine.connect() as conn:
                 conn.execute(text(f"""
                     INSERT INTO {self.table_name}
-                    (term, definition, domain, aliases, related_terms)
-                    VALUES (:term, :definition, :domain, :aliases, :related_terms)
-                    ON CONFLICT (term) DO UPDATE SET
+                    (collection_name, term, definition, domain, aliases, related_terms)
+                    VALUES (:collection_name, :term, :definition, :domain, :aliases, :related_terms)
+                    ON CONFLICT (collection_name, term) DO UPDATE SET
                         definition = EXCLUDED.definition,
                         domain = EXCLUDED.domain,
                         aliases = EXCLUDED.aliases,
                         related_terms = EXCLUDED.related_terms,
                         updated_at = CURRENT_TIMESTAMP
                 """), {
+                    "collection_name": self.collection_name,
                     "term": term, "definition": definition, "domain": domain,
                     "aliases": aliases or [], "related_terms": related_terms or []
                 })
@@ -158,11 +173,12 @@ class JargonDictionaryManager:
                 query = text(f"""
                     SELECT term, definition, domain, aliases, related_terms
                     FROM {self.table_name}
-                    WHERE LOWER(term) IN ({placeholders})
-                    OR term = ANY(:aliases_check)
+                    WHERE collection_name = :collection_name
+                    AND (LOWER(term) IN ({placeholders}) OR term = ANY(:aliases_check))
                 """)
                 params = {f"term_{i}": term.lower() for i, term in enumerate(terms)}
                 params["aliases_check"] = terms
+                params["collection_name"] = self.collection_name
 
                 rows = conn.execute(query, params).fetchall()
                 for row in rows:
@@ -188,8 +204,8 @@ class JargonDictionaryManager:
                         errors += 1
                         continue
                     result = conn.execute(
-                        text(f"DELETE FROM {self.table_name} WHERE term = :term"),
-                        {"term": term}
+                        text(f"DELETE FROM {self.table_name} WHERE collection_name = :collection_name AND term = :term"),
+                        {"collection_name": self.collection_name, "term": term}
                     )
                     deleted += result.rowcount or 0
         except Exception as e:
@@ -198,10 +214,13 @@ class JargonDictionaryManager:
         return deleted, errors
 
     def get_all_terms(self) -> List[Dict[str, Any]]:
-        """全ての用語を取得"""
+        """全ての用語を取得（現在のコレクションのみ）"""
         try:
             with self.engine.connect() as conn:
-                result = conn.execute(text(f"SELECT * FROM {self.table_name} ORDER BY term")).fetchall()
+                result = conn.execute(
+                    text(f"SELECT * FROM {self.table_name} WHERE collection_name = :collection_name ORDER BY term"),
+                    {"collection_name": self.collection_name}
+                ).fetchall()
                 return [dict(row._mapping) for row in result]
         except Exception as e:
             logger.error(f"Error getting all terms: {e}")
@@ -477,7 +496,13 @@ class TermExtractor:
         """
         logger.info("Starting per-document candidate extraction with global scoring")
 
+        # 抽出ログの初期化
+        extraction_log = ExtractionLogger(output_dir="output")
+        self._extraction_log = extraction_log  # 後で参照できるように保存
+
         # 1. 各ドキュメントで候補抽出
+        extraction_log.start_stage("候補用語抽出", "正規表現・形態素解析による候補抽出")
+
         all_candidates = defaultdict(int)
         document_candidate_map = {}  # ドキュメントごとの候補リスト
 
@@ -496,7 +521,15 @@ class TermExtractor:
 
         if not all_candidates:
             logger.warning("No candidates extracted from any document")
+            extraction_log.end_stage()
             return []
+
+        extraction_log.log_terms_after(list(all_candidates.keys()))
+        extraction_log.log_statistics({
+            "total_candidates": len(all_candidates),
+            "documents_processed": len(per_document_texts)
+        })
+        extraction_log.end_stage()
 
         logger.info(f"Total candidates across all documents: {len(all_candidates)}")
         logger.info(f"Processed {len(per_document_texts)} documents")
@@ -622,7 +655,15 @@ class TermExtractor:
         abbreviations = [t for t in terms if self._is_abbreviation(t.term)]
         non_abbreviations = [t for t in terms if not self._is_abbreviation(t.term)]
 
-        logger.info(f"Found {len(abbreviations)} abbreviations (will auto-include for definition generation)")
+        logger.info("=" * 70)
+        logger.info(f"ステップ7: 軽量LLMフィルタ前の状態")
+        logger.info("=" * 70)
+        logger.info(f"  候補用語総数: {len(terms)}個")
+        logger.info(f"  - 略語: {len(abbreviations)}個（自動承認）")
+        logger.info(f"  - 非略語: {len(non_abbreviations)}個")
+        if abbreviations:
+            abbr_sample = [t.term for t in abbreviations[:10]]
+            logger.info(f"  略語サンプル: {', '.join(abbr_sample)}{'...' if len(abbreviations) > 10 else ''}")
 
         enable_lightweight_filter = getattr(self.config, 'enable_lightweight_filter', True)
 
@@ -637,10 +678,15 @@ class TermExtractor:
                 logger.info(f"Lightweight filtering {len(candidate_terms)} candidates (top {definition_percentile}%)")
 
                 filtered_terms = await self._lightweight_llm_filter(candidate_terms)
-                logger.info(f"Lightweight filter passed: {len(filtered_terms)}/{len(candidate_terms)} terms")
+                filtered_count = len(filtered_terms)
+                rejected_count = len(candidate_terms) - filtered_count
+                logger.info(f"Lightweight filter passed: {filtered_count}/{len(candidate_terms)} terms")
+                logger.info(f"  - 承認: {filtered_count}個")
+                logger.info(f"  - 除外: {rejected_count}個")
 
                 # フィルタ通過した用語 + 全略語を定義生成対象にする
                 terms_for_definition = abbreviations + filtered_terms
+                logger.info(f"定義生成対象: {len(terms_for_definition)}個（略語{len(abbreviations)}個 + フィルタ通過{filtered_count}個）")
             except Exception as e:
                 logger.error(f"Lightweight filter failed: {e}. Proceeding without filtering.")
                 # フィルタ失敗時は上位N%をそのまま使用 + 全略語
@@ -666,6 +712,11 @@ class TermExtractor:
 
         # 9. 重量LLMフィルタ（定義がある用語のみ）
         if self.llm:
+            logger.info("=" * 70)
+            logger.info(f"ステップ9: 重量LLMフィルタ")
+            logger.info("=" * 70)
+            logger.info(f"  定義生成完了: {len([t for t in terms if t.definition])}個")
+            logger.info(f"  定義なし: {len([t for t in terms if not t.definition])}個")
             logger.info("Filtering terms with LLM")
             try:
                 from .prompts import get_technical_term_judgment_prompt
@@ -699,7 +750,11 @@ class TermExtractor:
                             logger.error(f"LLM filter batch failed: {e}")
 
                     terms = technical_terms
-                    logger.info(f"Filtered: {len(technical_terms)} technical terms")
+                    rejected_in_heavy_filter = len(terms_with_def) - len(technical_terms)
+                    logger.info(f"重量LLMフィルタ結果:")
+                    logger.info(f"  - 専門用語として承認: {len(technical_terms)}個")
+                    logger.info(f"  - 一般用語として除外: {rejected_in_heavy_filter}個")
+                    logger.info(f"最終的な専門用語数: {len(technical_terms)}個")
                 else:
                     logger.warning("No terms with definitions to filter")
             except Exception as e:
@@ -708,6 +763,15 @@ class TermExtractor:
             logger.warning("LLM filter skipped (llm not available)")
 
         # 10. 辞書形式に変換して返す
+        logger.info("=" * 70)
+        logger.info("専門用語抽出完了 - サマリー")
+        logger.info("=" * 70)
+        logger.info(f"最終的な専門用語数: {len(terms)}個")
+        logger.info(f"  - 定義あり: {len([t for t in terms if t.definition])}個")
+        logger.info(f"  - 定義なし: {len([t for t in terms if not t.definition])}個")
+        logger.info(f"  - 略語: {len([t for t in terms if self._is_abbreviation(t.term)])}個")
+        logger.info("=" * 70)
+
         terms_list = [
             {
                 "headword": term.term,
@@ -736,6 +800,23 @@ class TermExtractor:
                 "cvalue_score": cvalue_scores.get(term, 0.0),
                 "text": context  # 周辺テキストを追加
             })
+
+        # 最終段階のログを記録
+        extraction_log.start_stage("最終結果", "抽出完了")
+        extraction_log.log_terms_after([t["headword"] for t in terms_list])
+        extraction_log.log_statistics({
+            "final_term_count": len(terms_list),
+            "terms_with_definition": len([t for t in terms_list if t["definition"]]),
+            "abbreviations": len([t for t in terms_list if self._is_abbreviation(t["headword"])])
+        })
+        extraction_log.end_stage()
+
+        # ログを保存
+        try:
+            json_path, txt_path = extraction_log.save()
+            logger.info(f"Extraction log saved: {txt_path}")
+        except Exception as e:
+            logger.error(f"Failed to save extraction log: {e}")
 
         # 辞書形式で返す（後方互換性のため、termsキーで取得可能に）
         return {

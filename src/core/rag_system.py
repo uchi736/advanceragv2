@@ -201,6 +201,7 @@ class RAGSystem:
         self.jargon_manager = JargonDictionaryManager(
             self.connection_string,
             cfg.jargon_table_name,
+            collection_name=cfg.collection_name,
             engine=self.engine
         )
         self.ingestion_handler = IngestionHandler(
@@ -904,9 +905,9 @@ class RAGSystem:
         try:
             with self.engine.connect() as conn:
                 result = conn.execute(text("""
-                    SELECT DISTINCT collection_name
-                    FROM langchain_pg_embedding
-                    ORDER BY collection_name
+                    SELECT name
+                    FROM langchain_pg_collection
+                    ORDER BY name
                 """))
                 collections = [row[0] for row in result if row[0]]
                 return collections if collections else [self.config.collection_name]
@@ -966,6 +967,9 @@ class RAGSystem:
 
             # Update sql handler
             self.sql_handler.config.collection_name = new_collection_name
+
+            # Update jargon manager
+            self.jargon_manager.collection_name = new_collection_name
 
             logger.info(f"Successfully switched to collection: {new_collection_name}")
             return True
