@@ -122,6 +122,11 @@ class JargonDictionaryManager:
                 conn.execute(text(f"ALTER TABLE {self.table_name} DROP CONSTRAINT IF EXISTS {self.table_name}_term_key"))
                 conn.execute(text(f"ALTER TABLE {self.table_name} ADD CONSTRAINT {self.table_name}_collection_term_key UNIQUE(collection_name, term)"))
 
+            # domain カラムがない場合は追加（マイグレーション）
+            if 'domain' not in existing_columns:
+                logger.info(f"Adding domain column to {self.table_name}")
+                conn.execute(text(f"ALTER TABLE {self.table_name} ADD COLUMN domain TEXT"))
+
             # 不要なカラムを削除（confidence_score等の古いカラム）
             columns_to_drop = existing_columns - expected_columns
             for col in columns_to_drop:

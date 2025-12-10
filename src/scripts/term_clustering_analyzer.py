@@ -869,9 +869,6 @@ class TermClusteringAnalyzer:
                 except Exception as e:
                     logger.error(f"Error updating term '{term}': {e}", exc_info=True)
 
-            # 明示的にコミット (SQLAlchemy 2.0対応)
-            conn.commit()
-
         logger.info(f"Updated domain field for {updated_count} terms in database:")
         logger.info(f"  - With synonyms: {synonyms_count} terms")
         logger.info(f"  - Without synonyms: {no_synonyms_count} terms")
