@@ -143,9 +143,11 @@ class TermClusteringAnalyzer:
         normalized_embeddings = normalize(self.embeddings_matrix, norm='l2')
         
         # UMAP次元圧縮
-        logger.info(f"Applying UMAP dimensional reduction: {normalized_embeddings.shape[1]} -> 20 dimensions")
+        # UMAPはn_componentsがデータ点数以上だと固有値分解で落ちるため上限を小さくする
+        target_dims = max(2, min(10, normalized_embeddings.shape[0] - 1))
+        logger.info(f"Applying UMAP dimensional reduction: {normalized_embeddings.shape[1]} -> {target_dims} dimensions")
         umap_reducer = umap.UMAP(
-            n_components=20,  # 20次元に圧縮
+            n_components=target_dims,  # 20次元固定だとk>=Nで落ちるので調整
             n_neighbors=15,  # 近傍サンプル数
             min_dist=0.1,  # クラスタ内の密度制御
             metric='cosine',  # コサイン距離
@@ -866,6 +868,9 @@ class TermClusteringAnalyzer:
 
                 except Exception as e:
                     logger.error(f"Error updating term '{term}': {e}", exc_info=True)
+
+            # 明示的にコミット (SQLAlchemy 2.0対応)
+            conn.commit()
 
         logger.info(f"Updated domain field for {updated_count} terms in database:")
         logger.info(f"  - With synonyms: {synonyms_count} terms")

@@ -146,8 +146,12 @@ class JargonDictionaryManager:
                     VALUES (:collection_name, :term, :definition, :domain, :aliases, :related_terms)
                     ON CONFLICT (collection_name, term) DO UPDATE SET
                         definition = EXCLUDED.definition,
-                        domain = EXCLUDED.domain,
-                        aliases = EXCLUDED.aliases,
+                        domain = COALESCE(EXCLUDED.domain, {self.table_name}.domain),
+                        aliases = CASE
+                            WHEN array_length(EXCLUDED.aliases, 1) IS NULL
+                            THEN {self.table_name}.aliases
+                            ELSE EXCLUDED.aliases
+                        END,
                         related_terms = EXCLUDED.related_terms,
                         updated_at = CURRENT_TIMESTAMP
                 """), {
@@ -1224,12 +1228,14 @@ class TermExtractor:
                 try:
                     conn.execute(
                         text(f"""
-                            INSERT INTO {self.jargon_table_name} (collection_name, term, definition, aliases, related_terms)
-                            VALUES (:collection_name, :term, :definition, :aliases, :related_terms)
+                            INSERT INTO {self.jargon_table_name} (collection_name, term, definition, aliases, related_terms, domain)
+                            VALUES (:collection_name, :term, :definition, :aliases, :related_terms, :domain)
                             ON CONFLICT (collection_name, term) DO UPDATE
                             SET definition = EXCLUDED.definition,
                                 aliases = EXCLUDED.aliases,
                                 related_terms = EXCLUDED.related_terms,
+                                -- domainはNULL/空文字の場合は既存を保持して上書きしない
+                                domain = COALESCE(NULLIF(EXCLUDED.domain, ''), {self.jargon_table_name}.domain),
                                 updated_at = CURRENT_TIMESTAMP
                         """),
                         {
@@ -1237,7 +1243,8 @@ class TermExtractor:
                             "term": term.get("headword"),
                             "definition": term.get("definition", ""),
                             "aliases": term.get("synonyms", []),
-                            "related_terms": term.get("related_terms", [])
+                            "related_terms": term.get("related_terms", []),
+                            "domain": term.get("domain", None)
                         }
                     )
                     saved_count += 1
@@ -1270,6 +1277,8 @@ async def run_extraction_pipeline(input_dir: Path, output_json: Path, config, ll
     # 用語抽出（新しい辞書形式で返される）
     result = await extractor.extract_from_documents(files)
     terms = result.get("terms", [])
+    for term in terms:
+        term.setdefault("domain", None)
     candidates = result.get("candidates", [])
 
     # JSONファイルに保存（専門用語のみ）

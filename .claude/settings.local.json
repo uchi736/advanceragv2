@@ -23,7 +23,10 @@
       "Bash(dir /s /b c:workRAGadvancedrag2)",
       "Bash(dir /b c:workRAGadvancedrag2)",
       "Bash(dir:*)",
-      "Bash(myenv/Scripts/pip install:*)"
+      "Bash(myenv/Scripts/pip install:*)",
+      "Bash(tasklist)",
+      "Bash(tee:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

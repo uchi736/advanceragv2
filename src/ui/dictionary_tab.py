@@ -10,8 +10,8 @@ from src.rag.term_extraction import JargonDictionaryManager
 from src.rag.config import Config
 from src.utils.helpers import render_term_card
 
-@st.cache_data(ttl=60, show_spinner=False)  # TTLを300秒から60秒に短縮
 def get_all_terms_cached(_jargon_manager, collection_name: str):
+    # 以前はキャッシュしていたが、DB更新を即時UIに反映させるためキャッシュを外す
     return pd.DataFrame(_jargon_manager.get_all_terms())
 
 def check_vector_store_has_data(rag_system, collection_name: str):
@@ -116,7 +116,8 @@ def render_term_list(rag_system, jargon_manager):
                         related_terms=related_list
                     ):
                         st.success(f"用語「{new_term}」を登録しました。")
-                        get_all_terms_cached.clear()
+                        if hasattr(get_all_terms_cached, "clear"):
+                            get_all_terms_cached.clear()
                     else:
                         st.error(f"用語「{new_term}」の登録に失敗しました。")
 
@@ -133,7 +134,9 @@ def render_term_list(rag_system, jargon_manager):
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 更新", key="refresh_terms", use_container_width=True):
-            get_all_terms_cached.clear()
+            if hasattr(get_all_terms_cached, "clear"):
+                if hasattr(get_all_terms_cached, "clear"):
+                    get_all_terms_cached.clear()
             st.success("キャッシュをクリアしました。ページを再読み込みしてください。")
 
     # Load term data
@@ -185,7 +188,8 @@ def render_term_list(rag_system, jargon_manager):
                 deleted, errors = rag_system.delete_jargon_terms([row['term']])
                 if deleted:
                     st.success(f"用語「{row['term']}」を削除しました。")
-                    get_all_terms_cached.clear()
+                    if hasattr(get_all_terms_cached, "clear"):
+                        get_all_terms_cached.clear()
                 else:
                     st.error(f"用語「{row['term']}」の削除に失敗しました。")
 
@@ -233,7 +237,8 @@ def render_term_list(rag_system, jargon_manager):
                     st.success(f"{deleted_count}件の用語を削除しました。")
                 if error_count:
                     st.warning(f"{error_count}件の削除に失敗しました。")
-                get_all_terms_cached.clear()
+                if hasattr(get_all_terms_cached, "clear"):
+                    get_all_terms_cached.clear()
 
     # CSV download
     st.markdown("---")
@@ -245,7 +250,8 @@ def render_term_list(rag_system, jargon_manager):
                 st.success(f"{deleted_count}件の用語を削除しました。")
             if error_count:
                 st.warning(f"{error_count}件の削除に失敗しました。", icon="⚠️")
-            get_all_terms_cached.clear()
+            if hasattr(get_all_terms_cached, "clear"):
+                get_all_terms_cached.clear()
 
     csv = terms_df.to_csv(index=False)
     st.download_button(
@@ -412,7 +418,7 @@ def render_term_extraction(rag_system, jargon_manager):
                                     if jargon_manager.add_term(
                                         term=term_data.get('headword', ''),
                                         definition=term_data.get('definition', ''),
-                                        domain='',
+                                        domain=None,
                                         aliases=term_data.get('synonyms', []),
                                         related_terms=term_data.get('related_terms', [])
                                     ):
@@ -432,7 +438,8 @@ def render_term_extraction(rag_system, jargon_manager):
                         st.error(f"データベース登録エラー: {e}")
 
                     st.success(f"✅ 用語辞書を生成しました → {output_path}")
-                    get_all_terms_cached.clear()
+                    if hasattr(get_all_terms_cached, "clear"):
+                        get_all_terms_cached.clear()
                     st.rerun()
             else:
                 if not uploaded_files:
