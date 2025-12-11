@@ -209,12 +209,12 @@ def load_terms_from_db(pg_url: str, jargon_table_name: str, keyword: str = "") -
         if keyword:
             # Use %(name)s style for psycopg2 compatibility with pandas
             query = f"""
-                SELECT term, definition, domain, aliases, related_terms, confidence_score, updated_at
+                SELECT term, definition, domain, aliases, related_terms, updated_at
                 FROM {jargon_table_name}
                 WHERE term ILIKE %(keyword)s
                    OR definition ILIKE %(keyword)s
                    OR EXISTS (
-                       SELECT 1 FROM unnest(aliases) AS s 
+                       SELECT 1 FROM unnest(aliases) AS s
                        WHERE s ILIKE %(keyword)s
                    )
                 ORDER BY term
@@ -222,7 +222,7 @@ def load_terms_from_db(pg_url: str, jargon_table_name: str, keyword: str = "") -
             params = {"keyword": f"%{keyword}%"}
         else:
             query = f"""
-                SELECT term, definition, domain, aliases, related_terms, confidence_score, updated_at
+                SELECT term, definition, domain, aliases, related_terms, updated_at
                 FROM {jargon_table_name}
                 ORDER BY term
             """

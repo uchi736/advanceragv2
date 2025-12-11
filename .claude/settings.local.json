@@ -26,7 +26,8 @@
       "Bash(myenv/Scripts/pip install:*)",
       "Bash(tasklist)",
       "Bash(tee:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(move:*)"
     ],
     "deny": [],
     "ask": []

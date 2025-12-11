@@ -127,8 +127,13 @@ class JargonDictionaryManager:
                 logger.info(f"Adding domain column to {self.table_name}")
                 conn.execute(text(f"ALTER TABLE {self.table_name} ADD COLUMN domain TEXT"))
 
-            # 不要なカラムを削除（confidence_score等の古いカラム）
-            columns_to_drop = existing_columns - expected_columns
+            # confidence_score列の明示的削除（廃止済み、UIエラーの原因）
+            if 'confidence_score' in existing_columns:
+                logger.info(f"Dropping obsolete column: confidence_score from {self.table_name}")
+                conn.execute(text(f"ALTER TABLE {self.table_name} DROP COLUMN IF EXISTS confidence_score"))
+
+            # その他の不要なカラムを削除
+            columns_to_drop = existing_columns - expected_columns - {'confidence_score'}
             for col in columns_to_drop:
                 logger.info(f"Dropping obsolete column: {col} from {self.table_name}")
                 conn.execute(text(f"ALTER TABLE {self.table_name} DROP COLUMN IF EXISTS {col}"))

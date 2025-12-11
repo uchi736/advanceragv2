@@ -17,10 +17,14 @@ __pycache__/
 *.sqlite
 *.db
 .DS_Store
+*.nul
+nul
 NUL
+temp*.txt
 
 # データベース関連
 *.sql
+!database_schema.sql
 chroma_db/
 chroma_jargon_db/
 

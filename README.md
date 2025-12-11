@@ -1,5 +1,14 @@
 # Advanced RAG System v2 with SemReRank
 
+## セットアップのポイント（DB/pgvector）
+- PostgreSQL に `vector` と `uuid-ossp` 拡張を有効化できることを確認（マネージドDBでは事前に権限確認が必要）。
+- 知識グラフテーブル（`knowledge_nodes` / `knowledge_edges`）を含めて初期化する場合は下記を実行。埋め込み次元は Config のモデル設定に合わせて自動で適用されます。  
+  ```bash
+  python src/scripts/knowledge_graph/setup_database.py
+  ```
+- 既存DBにテーブルが無いと、グラフ/同義語機能で `relation "knowledge_nodes" does not exist` エラーになります。
+- pgvector が無効な環境では RAG 起動時にワーニングが出てベクトル機能が使えません。拡張を有効化できる環境で実行してください。
+
 ## 概要
 
 このシステムは、**SemReRank論文の手法を実装**した次世代の高度なRAG（Retrieval-Augmented Generation）システムです。Streamlitベースの直感的なUIを提供し、Azure OpenAI Serviceを活用して、日本語専門文書に特化した強力な情報検索と質問応答を実現します。

@@ -13,6 +13,23 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _resolve_embedding_dim(default_dim: int = 1536) -> int:
+    """
+    埋め込み次元を Config から取得し、失敗時はデフォルトを返す。
+    """
+    try:
+        # 遅延インポートで循環依存を避ける
+        from rag.config import Config
+
+        cfg = Config()
+        if hasattr(cfg, "get_embedding_dimensions"):
+            return int(cfg.get_embedding_dimensions())
+    except Exception as e:
+        logger.warning(f"Failed to resolve embedding dimension from Config, fallback to {default_dim}: {e}")
+    return default_dim
+
+
 def setup_database():
     """Execute schema.sql to set up database"""
     load_dotenv()
@@ -30,6 +47,10 @@ def setup_database():
     schema_path = Path(__file__).parent / 'schema.sql'
     with open(schema_path, 'r', encoding='utf-8') as f:
         schema_sql = f.read()
+
+    # 動的に埋め込み次元を差し込む（スキーマ側は {{EMBED_DIM}} プレースホルダを想定）
+    embed_dim = _resolve_embedding_dim()
+    schema_sql = schema_sql.replace("{{EMBED_DIM}}", str(embed_dim))
     
     try:
         # Connect and execute

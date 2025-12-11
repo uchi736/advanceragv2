@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -240,9 +241,20 @@ class RAGSystem:
 
     def _init_db(self):
         """Initialize database tables and extensions."""
+        logger = logging.getLogger(__name__)
+
+        def _ensure_extension(conn, ext_name: str) -> bool:
+            try:
+                conn.execute(text(f'CREATE EXTENSION IF NOT EXISTS "{ext_name}"'))
+                return True
+            except Exception as e:
+                logger.warning(f"Could not enable extension '{ext_name}': {e}")
+                return False
+
         with self.engine.connect() as conn, conn.begin():
-            # Enable pgvector extension
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            # Enable pgvector / uuid extensions (best-effort)
+            has_vector = _ensure_extension(conn, "vector")
+            _ensure_extension(conn, "uuid-ossp")
 
             # Create table for keyword search
             conn.execute(text(f"""
@@ -279,6 +291,11 @@ class RAGSystem:
 
             # スキーマ検証とマイグレーション
             self._validate_and_migrate_schema(conn)
+            # Knowledge graph tables (optional; used by synonym/graph features)
+            try:
+                self._init_knowledge_graph(conn, has_vector)
+            except Exception as e:
+                logger.warning(f"Knowledge graph tables were not initialized: {e}")
 
     def _validate_and_migrate_schema(self, conn):
         """データベーススキーマを検証し、必要に応じてマイグレーション"""
@@ -315,6 +332,97 @@ class RAGSystem:
                         conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type_clean}"))
                     except Exception as e:
                         logger.warning(f"Failed to add column {col_name} to {table_name}: {e}")
+
+    def _init_knowledge_graph(self, conn, has_vector: bool):
+        """
+        knowledge_nodes / knowledge_edges が存在しない場合に作成する。
+        ベクトル次元は Config から取得し、失敗時は 1536 を用いる。
+        """
+        logger = logging.getLogger(__name__)
+
+        if not has_vector:
+            logger.warning("pgvector extension is not available; skipping knowledge graph table creation.")
+            return
+
+        existing = {
+            row[0]
+            for row in conn.execute(text("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name IN ('knowledge_nodes', 'knowledge_edges')
+            """)).fetchall()
+        }
+        if {'knowledge_nodes', 'knowledge_edges'}.issubset(existing):
+            return
+
+        try:
+            embed_dim = int(self.config.get_embedding_dimensions()) if hasattr(self.config, "get_embedding_dimensions") else 1536
+        except Exception as e:
+            logger.warning(f"Failed to resolve embedding dimension, fallback to 1536: {e}")
+            embed_dim = 1536
+
+        # knowledge_nodes
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS knowledge_nodes (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                node_type VARCHAR(50) NOT NULL CHECK (
+                    node_type IN ('Term', 'Category', 'Domain', 'Component', 'System')
+                ),
+                term VARCHAR(255),
+                definition TEXT,
+                properties JSONB DEFAULT '{{}}',
+                embedding vector({embed_dim}),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uniq_term_only_term_nodes
+            ON knowledge_nodes (term)
+            WHERE node_type = 'Term'
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_nodes_type ON knowledge_nodes(node_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_nodes_properties ON knowledge_nodes USING GIN(properties)"))
+        if has_vector:
+            try:
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_nodes_embedding_hnsw
+                    ON knowledge_nodes
+                    USING hnsw (embedding vector_l2_ops)
+                    WITH (m = 16, ef_construction = 64)
+                """))
+            except Exception as e:
+                logger.warning(f"HNSW index for knowledge_nodes was skipped: {e}")
+
+        # knowledge_edges
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS knowledge_edges (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                source_id UUID REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                target_id UUID REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                edge_type VARCHAR(50) NOT NULL CHECK (
+                    edge_type IN (
+                        'IS_A','HAS_SUBTYPE','BELONGS_TO',
+                        'PART_OF','HAS_COMPONENT','INCLUDES',
+                        'USED_FOR','PERFORMS','CONTROLS','MEASURES',
+                        'RELATED_TO','SIMILAR_TO','SYNONYM','CO_OCCURS_WITH','DEPENDS_ON',
+                        'CAUSES','PREVENTS','PROCESSES','GENERATES'
+                    )
+                ),
+                weight FLOAT DEFAULT 1.0 CHECK (weight >= 0 AND weight <= 1),
+                confidence FLOAT DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+                properties JSONB DEFAULT '{{}}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT no_self_loop CHECK (source_id != target_id),
+                CONSTRAINT unique_edge UNIQUE(source_id, target_id, edge_type)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_source ON knowledge_edges(source_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_target ON knowledge_edges(target_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_type ON knowledge_edges(edge_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_weight ON knowledge_edges(weight DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_confidence ON knowledge_edges(confidence DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_properties ON knowledge_edges USING GIN(properties)"))
 
     def _create_retrieval_chain(self) -> Runnable:
         """
