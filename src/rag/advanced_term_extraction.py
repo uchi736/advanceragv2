@@ -887,20 +887,21 @@ class AdvancedStatisticalExtractor:
     def calculate_tfidf(
         self,
         documents: List[str],
-        candidates: Dict[str, int]
+        candidates: Dict[str, int],
+        per_document_texts: Optional[List[str]] = None
     ) -> Dict[str, float]:
         """
         TF-IDF計算（形態素ベース・完全一致）
 
         Args:
-            documents: 文書リスト（文単位で分割）
+            documents: 文書リスト（文単位で分割、TF計算用）
             candidates: 候補用語と頻度
+            per_document_texts: ドキュメント単位のテキスト（DF計算用、推奨）
 
         Returns:
             TF-IDFスコアの辞書
         """
         vocabulary = list(candidates.keys())
-        N = len(documents)  # 文書数
 
         # 事前に全用語をトークン化（効率化）
         term_token_map = {}
@@ -912,8 +913,46 @@ class AdvancedStatisticalExtractor:
                 term_token_map[term] = (term,)  # フォールバック
 
         # 1. 各用語の文書頻度（DF）を計算
-        df = defaultdict(int)
-        term_freq_per_doc = []  # 各文書での用語頻度
+        # per_document_textsが提供されていればドキュメント単位でDF計算（推奨）
+        if per_document_texts:
+            logger.info(f"Calculating DF at document level (N={len(per_document_texts)} documents)")
+            N = len(per_document_texts)  # ドキュメント数
+            df = defaultdict(int)
+
+            for doc_text in per_document_texts:
+                # このドキュメント内に出現する用語のセット
+                doc_has_term = set()
+
+                # 形態素解析してトークン化
+                tokens = self._safe_tokenize(doc_text, self.sudachi_mode_a)
+                token_surfaces = tuple([t.surface() for t in tokens])
+
+                # 各用語がこのドキュメントに出現するかチェック
+                for term, term_tokens in term_token_map.items():
+                    term_len = len(term_tokens)
+                    found = False
+
+                    for i in range(len(token_surfaces) - term_len + 1):
+                        if token_surfaces[i:i+term_len] == term_tokens:
+                            doc_has_term.add(term)
+                            found = True
+                            break
+
+                    if found:
+                        continue  # 次の用語へ
+
+                # このドキュメントに出現した用語のDFをインクリメント
+                for term in doc_has_term:
+                    df[term] += 1
+
+        else:
+            # 従来通り文単位でDF計算（後方互換性）
+            logger.warning("Calculating DF at sentence level (less accurate). Consider providing per_document_texts.")
+            N = len(documents)  # 文数
+            df = defaultdict(int)
+
+        # 2. TF計算は文単位で実施（細かい粒度を維持）
+        term_freq_per_doc = []  # 各文での用語頻度
 
         for doc in documents:
             # 形態素解析してトークン化（Mode A）
@@ -931,9 +970,10 @@ class AdvancedStatisticalExtractor:
                     if token_surfaces[i:i+term_len] == term_tokens:
                         doc_term_count[term] += 1
 
-            # DF計算（この文書に出現するか）
-            for term in doc_term_count:
-                df[term] += 1
+            # 従来のDF計算（per_document_textsがない場合のみ）
+            if not per_document_texts:
+                for term in doc_term_count:
+                    df[term] += 1
 
             term_freq_per_doc.append(doc_term_count)
 

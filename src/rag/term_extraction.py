@@ -554,7 +554,15 @@ class TermExtractor:
         full_text = "\n".join([doc["text"] for doc in per_document_texts])
         documents = self._split_into_sentences(full_text)
 
-        tfidf_scores = self.statistical_extractor.calculate_tfidf(documents, all_candidates)
+        # ドキュメント単位のテキストを抽出（DF計算用）
+        doc_texts = [doc["text"] for doc in per_document_texts]
+
+        # TF-IDF計算（ドキュメント単位のDFで正確なIDF）
+        tfidf_scores = self.statistical_extractor.calculate_tfidf(
+            documents,
+            all_candidates,
+            per_document_texts=doc_texts  # ドキュメント単位のDF計算
+        )
         cvalue_scores = self.statistical_extractor.calculate_cvalue(all_candidates, full_text=full_text)
 
         # 2.5. C-valueベースの部分文字列フィルタリング
