@@ -72,7 +72,7 @@ FOR EACH ROW EXECUTE FUNCTION update_jargon_updated_at();
 -- Used by: knowledge graph builder, graph visualizer, query expander
 
 DROP TABLE IF EXISTS knowledge_edges CASCADE;
-DROP TABLE IF NOT EXISTS knowledge_nodes CASCADE;
+DROP TABLE IF EXISTS knowledge_nodes CASCADE;
 
 CREATE TABLE knowledge_nodes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

@@ -801,7 +801,337 @@ def render_term_analysis():
                             st.pyplot(fig)
                             plt.close(fig)
 
-                # 7. レポートダウンロード
+                # 6.5. スコア分布ヒストグラム（全候補用語）
+                st.markdown("---")
+                st.subheader("📊 候補用語スコア分布")
+                st.caption("TF-IDF、C-value、総合スコアの分布を可視化")
+
+                # 候補用語データからスコアを抽出
+                tfidf_scores = [t.get('tfidf_score', 0) for t in candidate_terms if t.get('tfidf_score', 0) > 0]
+                cvalue_scores = [t.get('cvalue_score', 0) for t in candidate_terms if t.get('cvalue_score', 0) > 0]
+                base_scores_all = [t.get('base_score', 0) for t in candidate_terms if t.get('base_score', 0) > 0]
+                revised_scores_all = [t.get('revised_score', 0) for t in candidate_terms if t.get('revised_score', 0) > 0]
+
+                if tfidf_scores or cvalue_scores or base_scores_all:
+                    import matplotlib.pyplot as plt
+                    import matplotlib
+                    matplotlib.use('Agg')
+
+                    # 日本語フォント設定
+                    import platform
+                    if platform.system() == 'Windows':
+                        plt.rcParams['font.family'] = 'Yu Gothic'
+                    elif platform.system() == 'Darwin':
+                        plt.rcParams['font.family'] = 'Hiragino Sans'
+                    else:
+                        plt.rcParams['font.family'] = 'Noto Sans CJK JP'
+                    plt.rcParams['axes.unicode_minus'] = False
+
+                    # 2x2グリッドでスコア分布を表示
+                    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+                    # TF-IDFスコア分布
+                    if tfidf_scores:
+                        axes[0, 0].hist(tfidf_scores, bins=30, alpha=0.7, color='steelblue', edgecolor='black')
+                        axes[0, 0].set_xlabel('TF-IDFスコア')
+                        axes[0, 0].set_ylabel('用語数')
+                        axes[0, 0].set_title(f'TF-IDFスコア分布 (n={len(tfidf_scores)})')
+                        axes[0, 0].grid(True, alpha=0.3, axis='y')
+                        # 統計情報
+                        mean_tfidf = sum(tfidf_scores) / len(tfidf_scores)
+                        axes[0, 0].axvline(mean_tfidf, color='red', linestyle='--', linewidth=2, label=f'平均: {mean_tfidf:.2f}')
+                        axes[0, 0].legend()
+
+                    # C-valueスコア分布
+                    if cvalue_scores:
+                        axes[0, 1].hist(cvalue_scores, bins=30, alpha=0.7, color='green', edgecolor='black')
+                        axes[0, 1].set_xlabel('C-valueスコア')
+                        axes[0, 1].set_ylabel('用語数')
+                        axes[0, 1].set_title(f'C-valueスコア分布 (n={len(cvalue_scores)})')
+                        axes[0, 1].grid(True, alpha=0.3, axis='y')
+                        # 統計情報
+                        mean_cvalue = sum(cvalue_scores) / len(cvalue_scores)
+                        axes[0, 1].axvline(mean_cvalue, color='red', linestyle='--', linewidth=2, label=f'平均: {mean_cvalue:.2f}')
+                        axes[0, 1].legend()
+
+                    # Base Score分布（正規化前）
+                    if base_scores_all:
+                        axes[1, 0].hist(base_scores_all, bins=30, alpha=0.7, color='orange', edgecolor='black')
+                        axes[1, 0].set_xlabel('Base Score')
+                        axes[1, 0].set_ylabel('用語数')
+                        axes[1, 0].set_title(f'Base Score分布 (n={len(base_scores_all)})')
+                        axes[1, 0].grid(True, alpha=0.3, axis='y')
+                        # 統計情報
+                        mean_base = sum(base_scores_all) / len(base_scores_all)
+                        axes[1, 0].axvline(mean_base, color='red', linestyle='--', linewidth=2, label=f'平均: {mean_base:.2f}')
+                        axes[1, 0].legend()
+
+                    # Revised Score分布（SemReRank適用後）
+                    if revised_scores_all:
+                        axes[1, 1].hist(revised_scores_all, bins=30, alpha=0.7, color='purple', edgecolor='black')
+                        axes[1, 1].set_xlabel('Revised Score')
+                        axes[1, 1].set_ylabel('用語数')
+                        axes[1, 1].set_title(f'Revised Score分布 (SemReRank適用後, n={len(revised_scores_all)})')
+                        axes[1, 1].grid(True, alpha=0.3, axis='y')
+                        # 統計情報
+                        mean_revised = sum(revised_scores_all) / len(revised_scores_all)
+                        axes[1, 1].axvline(mean_revised, color='red', linestyle='--', linewidth=2, label=f'平均: {mean_revised:.2f}')
+                        axes[1, 1].legend()
+
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+                    # Ground Truth vs 全候補の比較
+                    with st.expander("📊 Ground Truth vs 全候補の比較", expanded=False):
+                        st.caption("Ground Truth用語と全候補用語のスコア分布を比較")
+
+                        # Ground Truth用語のスコアを抽出
+                        gt_terms_set = set(ground_truth.get("all_documents", []))
+                        if not gt_terms_set:
+                            # all_documentsキーがない場合は、全ドキュメントの用語を統合
+                            for key, doc_terms in ground_truth.items():
+                                if isinstance(doc_terms, list):
+                                    gt_terms_set.update(doc_terms)
+
+                        gt_tfidf = []
+                        gt_cvalue = []
+                        gt_base = []
+                        gt_revised = []
+
+                        for term_data in candidate_terms:
+                            term_name = term_data.get('term') or term_data.get('headword')
+                            if term_name in gt_terms_set:
+                                if term_data.get('tfidf_score', 0) > 0:
+                                    gt_tfidf.append(term_data['tfidf_score'])
+                                if term_data.get('cvalue_score', 0) > 0:
+                                    gt_cvalue.append(term_data['cvalue_score'])
+                                if term_data.get('base_score', 0) > 0:
+                                    gt_base.append(term_data['base_score'])
+                                if term_data.get('revised_score', 0) > 0:
+                                    gt_revised.append(term_data['revised_score'])
+
+                        if gt_tfidf or gt_cvalue or gt_base:
+                            fig2, axes2 = plt.subplots(2, 2, figsize=(14, 10))
+
+                            # TF-IDF比較
+                            if tfidf_scores and gt_tfidf:
+                                axes2[0, 0].hist(tfidf_scores, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
+                                axes2[0, 0].hist(gt_tfidf, bins=30, alpha=0.7, label='Ground Truth', color='blue', edgecolor='black')
+                                axes2[0, 0].set_xlabel('TF-IDFスコア')
+                                axes2[0, 0].set_ylabel('用語数')
+                                axes2[0, 0].set_title('TF-IDFスコア: Ground Truth vs 全候補')
+                                axes2[0, 0].legend()
+                                axes2[0, 0].grid(True, alpha=0.3, axis='y')
+
+                            # C-value比較
+                            if cvalue_scores and gt_cvalue:
+                                axes2[0, 1].hist(cvalue_scores, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
+                                axes2[0, 1].hist(gt_cvalue, bins=30, alpha=0.7, label='Ground Truth', color='green', edgecolor='black')
+                                axes2[0, 1].set_xlabel('C-valueスコア')
+                                axes2[0, 1].set_ylabel('用語数')
+                                axes2[0, 1].set_title('C-valueスコア: Ground Truth vs 全候補')
+                                axes2[0, 1].legend()
+                                axes2[0, 1].grid(True, alpha=0.3, axis='y')
+
+                            # Base Score比較
+                            if base_scores_all and gt_base:
+                                axes2[1, 0].hist(base_scores_all, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
+                                axes2[1, 0].hist(gt_base, bins=30, alpha=0.7, label='Ground Truth', color='orange', edgecolor='black')
+                                axes2[1, 0].set_xlabel('Base Score')
+                                axes2[1, 0].set_ylabel('用語数')
+                                axes2[1, 0].set_title('Base Score: Ground Truth vs 全候補')
+                                axes2[1, 0].legend()
+                                axes2[1, 0].grid(True, alpha=0.3, axis='y')
+
+                            # Revised Score比較
+                            if revised_scores_all and gt_revised:
+                                axes2[1, 1].hist(revised_scores_all, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
+                                axes2[1, 1].hist(gt_revised, bins=30, alpha=0.7, label='Ground Truth', color='purple', edgecolor='black')
+                                axes2[1, 1].set_xlabel('Revised Score')
+                                axes2[1, 1].set_ylabel('用語数')
+                                axes2[1, 1].set_title('Revised Score: Ground Truth vs 全候補')
+                                axes2[1, 1].legend()
+                                axes2[1, 1].grid(True, alpha=0.3, axis='y')
+
+                            plt.tight_layout()
+                            st.pyplot(fig2)
+                            plt.close(fig2)
+
+                            # 統計情報テーブル
+                            st.markdown("#### 📈 統計比較")
+                            stats_data = []
+
+                            if gt_tfidf and tfidf_scores:
+                                stats_data.append({
+                                    "スコア種別": "TF-IDF",
+                                    "GT平均": f"{sum(gt_tfidf)/len(gt_tfidf):.3f}",
+                                    "全体平均": f"{sum(tfidf_scores)/len(tfidf_scores):.3f}",
+                                    "GT中央値": f"{sorted(gt_tfidf)[len(gt_tfidf)//2]:.3f}",
+                                    "全体中央値": f"{sorted(tfidf_scores)[len(tfidf_scores)//2]:.3f}"
+                                })
+
+                            if gt_cvalue and cvalue_scores:
+                                stats_data.append({
+                                    "スコア種別": "C-value",
+                                    "GT平均": f"{sum(gt_cvalue)/len(gt_cvalue):.3f}",
+                                    "全体平均": f"{sum(cvalue_scores)/len(cvalue_scores):.3f}",
+                                    "GT中央値": f"{sorted(gt_cvalue)[len(gt_cvalue)//2]:.3f}",
+                                    "全体中央値": f"{sorted(cvalue_scores)[len(cvalue_scores)//2]:.3f}"
+                                })
+
+                            if gt_base and base_scores_all:
+                                stats_data.append({
+                                    "スコア種別": "Base Score",
+                                    "GT平均": f"{sum(gt_base)/len(gt_base):.3f}",
+                                    "全体平均": f"{sum(base_scores_all)/len(base_scores_all):.3f}",
+                                    "GT中央値": f"{sorted(gt_base)[len(gt_base)//2]:.3f}",
+                                    "全体中央値": f"{sorted(base_scores_all)[len(base_scores_all)//2]:.3f}"
+                                })
+
+                            if gt_revised and revised_scores_all:
+                                stats_data.append({
+                                    "スコア種別": "Revised Score",
+                                    "GT平均": f"{sum(gt_revised)/len(gt_revised):.3f}",
+                                    "全体平均": f"{sum(revised_scores_all)/len(revised_scores_all):.3f}",
+                                    "GT中央値": f"{sorted(gt_revised)[len(gt_revised)//2]:.3f}",
+                                    "全体中央値": f"{sorted(revised_scores_all)[len(revised_scores_all)//2]:.3f}"
+                                })
+
+                            if stats_data:
+                                stats_df = pd.DataFrame(stats_data)
+                                st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                                st.caption("💡 Ground Truth用語の平均スコアが全体より高い場合、そのスコアは専門用語抽出に有効")
+
+                        else:
+                            st.info("Ground Truth用語が候補用語データに見つかりませんでした")
+
+                else:
+                    st.info("候補用語データにスコア情報が含まれていません")
+
+                # 7. Ground Truth追跡分析（dropout_report.jsonがある場合）
+                dropout_report_path = Path("output").glob("dropout_report_*.json")
+                dropout_report_files = sorted(dropout_report_path, key=lambda p: p.stat().st_mtime, reverse=True)
+
+                if dropout_report_files:
+                    st.markdown("---")
+                    st.subheader("📊 Ground Truth追跡レポート")
+                    st.caption("各用語が抽出プロセスのどの段階で脱落したかを分析")
+
+                    # 最新のレポートを読み込み
+                    latest_dropout_report = dropout_report_files[0]
+
+                    try:
+                        with open(latest_dropout_report, 'r', encoding='utf-8') as f:
+                            dropout_data = json.load(f)
+
+                        summary = dropout_data.get("summary", {})
+                        dropout_by_stage = dropout_data.get("dropout_by_stage", {})
+                        extraction_funnel = dropout_data.get("extraction_funnel", [])
+                        missed_terms = dropout_data.get("missed_terms", [])
+
+                        # サマリーメトリクス
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("抽出成功", f"{summary.get('extracted', 0)}件")
+                        col2.metric("脱落", f"{summary.get('missed', 0)}件")
+                        col3.metric("Recall", f"{summary.get('recall', 0):.1%}")
+
+                        # 抽出ファネル（段階別残存数）の可視化
+                        if extraction_funnel:
+                            st.markdown("#### 📉 抽出ファネル（段階別残存数）")
+
+                            import matplotlib.pyplot as plt
+                            import matplotlib
+                            matplotlib.use('Agg')
+
+                            # 日本語フォント設定
+                            import platform
+                            if platform.system() == 'Windows':
+                                plt.rcParams['font.family'] = 'Yu Gothic'
+                            elif platform.system() == 'Darwin':
+                                plt.rcParams['font.family'] = 'Hiragino Sans'
+                            else:
+                                plt.rcParams['font.family'] = 'Noto Sans CJK JP'
+                            plt.rcParams['axes.unicode_minus'] = False
+
+                            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+                            # 左: 残存数の推移（折れ線グラフ）
+                            stages = [entry['stage'] for entry in extraction_funnel]
+                            remaining = [entry['remaining'] for entry in extraction_funnel]
+
+                            ax1.plot(stages, remaining, marker='o', linewidth=2, markersize=8, color='steelblue')
+                            ax1.set_xlabel('抽出段階')
+                            ax1.set_ylabel('残存用語数')
+                            ax1.set_title('抽出ファネル: Ground Truth用語の残存数')
+                            ax1.grid(True, alpha=0.3)
+                            ax1.tick_params(axis='x', rotation=45)
+
+                            # 右: 段階別脱落数（棒グラフ）
+                            dropout_counts = [entry['dropout'] for entry in extraction_funnel]
+                            colors = ['red' if d > 0 else 'lightgray' for d in dropout_counts]
+
+                            ax2.bar(stages, dropout_counts, color=colors, alpha=0.7)
+                            ax2.set_xlabel('抽出段階')
+                            ax2.set_ylabel('脱落用語数')
+                            ax2.set_title('段階別脱落数')
+                            ax2.grid(True, alpha=0.3, axis='y')
+                            ax2.tick_params(axis='x', rotation=45)
+
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            plt.close(fig)
+
+                        # 段階別脱落詳細
+                        if dropout_by_stage:
+                            st.markdown("#### 📋 段階別脱落詳細")
+
+                            dropout_df = pd.DataFrame([
+                                {
+                                    '段階': stage,
+                                    '脱落数': count,
+                                    '割合': f"{count / summary['missed'] * 100:.1f}%" if summary['missed'] > 0 else "0%"
+                                }
+                                for stage, count in sorted(dropout_by_stage.items(), key=lambda x: x[1], reverse=True)
+                                if count > 0
+                            ])
+                            st.dataframe(dropout_df, use_container_width=True, hide_index=True)
+
+                        # 脱落した用語の詳細
+                        with st.expander("❌ 脱落した用語の詳細", expanded=False):
+                            if missed_terms:
+                                # 脱落段階でグループ化
+                                from collections import defaultdict
+                                by_dropout_stage = defaultdict(list)
+
+                                for term_info in missed_terms:
+                                    stage = term_info.get("dropout_stage", "unknown")
+                                    by_dropout_stage[stage].append(term_info["term"])
+
+                                for stage, terms in sorted(by_dropout_stage.items()):
+                                    st.markdown(f"**{stage}で脱落（{len(terms)}件）:**")
+                                    st.write(", ".join(terms[:20]))
+                                    if len(terms) > 20:
+                                        st.caption(f"...他 {len(terms) - 20}件")
+                            else:
+                                st.info("すべてのGround Truth用語が抽出されました")
+
+                        # レポートダウンロード
+                        dropout_json = json.dumps(dropout_data, ensure_ascii=False, indent=2)
+                        st.download_button(
+                            "📥 Ground Truth追跡レポートをダウンロード (JSON)",
+                            data=dropout_json,
+                            file_name="ground_truth_dropout_report.json",
+                            mime="application/json",
+                            use_container_width=True
+                        )
+
+                    except Exception as e:
+                        st.error(f"Ground Truth追跡レポートの読み込みエラー: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+                # 8. 通常レポートダウンロード
                 st.markdown("---")
                 md_report = analyzer.generate_markdown_report(results)
                 st.download_button(

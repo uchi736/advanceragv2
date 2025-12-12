@@ -34,6 +34,10 @@ class ExtractionLogger:
         # 各段階での用語セット（変化を追跡）
         self.stage_terms = {}
 
+        # Ground Truth追跡用
+        self.ground_truth_terms = set()
+        self.dropout_analyzer = None
+
     def start_stage(self, stage_name: str, description: str = ""):
         """新しい段階を開始"""
         self.current_stage = {
@@ -88,6 +92,35 @@ class ExtractionLogger:
                 self.current_stage["removed_terms_details"] = {}
             self.current_stage["removed_terms_details"].update(terms_with_reasons)
 
+    def set_ground_truth(self, ground_truth_terms: List[str]):
+        """Ground Truth用語を設定し、追跡を開始"""
+        self.ground_truth_terms = set(ground_truth_terms)
+
+        if ground_truth_terms:
+            try:
+                from .term_dropout_analyzer import TermDropoutAnalyzer
+                self.dropout_analyzer = TermDropoutAnalyzer(ground_truth_terms)
+                logger.info(f"Ground Truth tracking enabled for {len(ground_truth_terms)} terms")
+            except ImportError:
+                logger.warning("TermDropoutAnalyzer not available. Ground Truth tracking disabled.")
+                self.dropout_analyzer = None
+
+    def log_ground_truth_status(self, metadata: Dict[str, Any] = None):
+        """現在の段階でのGround Truth用語の状態を記録"""
+        if not self.dropout_analyzer or not self.current_stage:
+            return
+
+        current_terms = self.current_stage.get("terms_after", [])
+        removed_terms_details = self.current_stage.get("removed_terms_details", {})
+
+        # TermDropoutAnalyzerに状態を記録
+        self.dropout_analyzer.track_stage(
+            stage_name=self.current_stage["name"],
+            current_terms=current_terms,
+            metadata=metadata,
+            removed_terms_with_reasons=removed_terms_details
+        )
+
     def end_stage(self):
         """現在の段階を終了"""
         if self.current_stage:
@@ -99,6 +132,9 @@ class ExtractionLogger:
                     "removed_count": len(self.current_stage["removed_terms"]),
                     "added_count": len(self.current_stage["added_terms"])
                 }
+
+            # Ground Truth追跡
+            self.log_ground_truth_status()
 
             self.stages.append(self.current_stage)
             logger.info(f"Stage ended: {self.current_stage['name']}")
@@ -129,7 +165,14 @@ class ExtractionLogger:
 
         logger.info(f"Extraction log (text) saved: {txt_path}")
 
-        return str(json_path), str(txt_path)
+        # Ground Truth追跡レポートを保存
+        dropout_report_path = None
+        if self.dropout_analyzer:
+            dropout_report_path = self.output_dir / f"dropout_report_{timestamp}.json"
+            self.dropout_analyzer.save_report(str(dropout_report_path))
+            logger.info(f"Dropout report saved: {dropout_report_path}")
+
+        return str(json_path), str(txt_path), str(dropout_report_path) if dropout_report_path else None
 
     def _generate_summary(self) -> Dict[str, Any]:
         """全体サマリーを生成"""

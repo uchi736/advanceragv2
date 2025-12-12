@@ -122,3 +122,4 @@ xlrd==1.2.0
 XlsxWriter==3.2.3
 yarl==1.20.0
 zstandard==0.23.0
+matplotlib>=3.7.0

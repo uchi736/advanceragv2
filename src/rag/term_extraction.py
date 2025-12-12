@@ -558,16 +558,33 @@ class TermExtractor:
         cvalue_scores = self.statistical_extractor.calculate_cvalue(all_candidates, full_text=full_text)
 
         # 2.5. C-valueベースの部分文字列フィルタリング
+        extraction_log.start_stage("C-valueフィルタリング", "部分文字列の独立性チェック")
+        extraction_log.log_terms_before(list(all_candidates.keys()))
+
         logger.info("Applying C-value based nested term filtering")
-        all_candidates = self._filter_nested_terms_by_cvalue(
+        filtered_candidates = self._filter_nested_terms_by_cvalue(
             all_candidates,
             cvalue_scores,
             threshold_ratio=0.3
         )
+
+        # 除外された用語（ネスト用語）を記録
+        removed_by_cvalue = set(all_candidates.keys()) - set(filtered_candidates.keys())
+        if removed_by_cvalue:
+            extraction_log.log_removed_terms_with_reason({
+                term: "C-value: ネスト用語（部分文字列）" for term in removed_by_cvalue
+            })
+
+        all_candidates = filtered_candidates
+
         # TF-IDFとC-valueを再計算（フィルタ後の候補のみ）
         tfidf_scores = {k: v for k, v in tfidf_scores.items() if k in all_candidates}
         cvalue_scores = {k: v for k, v in cvalue_scores.items() if k in all_candidates}
         logger.info(f"Candidates after C-value filtering: {len(all_candidates)}")
+
+        extraction_log.log_terms_after(list(all_candidates.keys()))
+        extraction_log.log_statistics({"filtered_count": len(all_candidates)})
+        extraction_log.end_stage()
 
         # 3. 基底スコア計算（2段階）
         seed_scores = self.statistical_extractor.calculate_combined_scores(
@@ -686,6 +703,9 @@ class TermExtractor:
         enable_lightweight_filter = getattr(self.config, 'enable_lightweight_filter', True)
 
         if enable_lightweight_filter and self.llm:
+            extraction_log.start_stage("軽量LLMフィルタ", "スコア上位候補の専門用語判定")
+            extraction_log.log_terms_before([t.term for t in terms])
+
             logger.info("Applying lightweight LLM filter (before definition generation)")
             try:
                 # 上位N%を選択してから軽量フィルタ（略語以外）
@@ -702,9 +722,24 @@ class TermExtractor:
                 logger.info(f"  - 承認: {filtered_count}個")
                 logger.info(f"  - 除外: {rejected_count}個")
 
+                # 除外された用語を記録
+                rejected_terms = set(t.term for t in candidate_terms) - set(t.term for t in filtered_terms)
+                if rejected_terms:
+                    extraction_log.log_removed_terms_with_reason({
+                        term: "軽量LLMフィルタ: 一般用語と判定" for term in rejected_terms
+                    })
+
                 # フィルタ通過した用語 + 全略語を定義生成対象にする
                 terms_for_definition = abbreviations + filtered_terms
                 logger.info(f"定義生成対象: {len(terms_for_definition)}個（略語{len(abbreviations)}個 + フィルタ通過{filtered_count}個）")
+
+                extraction_log.log_terms_after([t.term for t in terms_for_definition])
+                extraction_log.log_statistics({
+                    "passed_count": filtered_count,
+                    "rejected_count": rejected_count,
+                    "abbreviations_auto_approved": len(abbreviations)
+                })
+                extraction_log.end_stage()
             except Exception as e:
                 logger.error(f"Lightweight filter failed: {e}. Proceeding without filtering.")
                 # フィルタ失敗時は上位N%をそのまま使用 + 全略語
@@ -730,6 +765,9 @@ class TermExtractor:
 
         # 9. 重量LLMフィルタ（定義がある用語のみ）
         if self.llm:
+            extraction_log.start_stage("重量LLMフィルタ", "定義ベースの最終専門用語判定")
+            extraction_log.log_terms_before([t.term for t in terms if t.definition])
+
             logger.info("=" * 70)
             logger.info(f"ステップ9: 重量LLMフィルタ")
             logger.info("=" * 70)
@@ -748,6 +786,7 @@ class TermExtractor:
 
                     batch_size = getattr(self.config, 'llm_filter_batch_size', 10)
                     technical_terms = []
+                    rejected_terms_reasons = {}
 
                     for i in range(0, len(terms_with_def), batch_size):
                         batch = terms_with_def[i:i+batch_size]
@@ -763,15 +802,28 @@ class TermExtractor:
                                     technical_terms.append(term)
                                     logger.info(f"  [OK] {term.term}: 専門用語")
                                 else:
+                                    reason = result.get("reason", "一般用語と判定") if result else "LLM判定失敗"
+                                    rejected_terms_reasons[term.term] = f"重量LLMフィルタ: {reason}"
                                     logger.info(f"  [NG] {term.term}: 一般用語")
                         except Exception as e:
                             logger.error(f"LLM filter batch failed: {e}")
+
+                    # 除外された用語を記録
+                    if rejected_terms_reasons:
+                        extraction_log.log_removed_terms_with_reason(rejected_terms_reasons)
 
                     terms = technical_terms
                     rejected_in_heavy_filter = len(terms_with_def) - len(technical_terms)
                     logger.info(f"重量LLMフィルタ結果:")
                     logger.info(f"  - 専門用語として承認: {len(technical_terms)}個")
                     logger.info(f"  - 一般用語として除外: {rejected_in_heavy_filter}個")
+
+                    extraction_log.log_terms_after([t.term for t in technical_terms])
+                    extraction_log.log_statistics({
+                        "approved_count": len(technical_terms),
+                        "rejected_count": rejected_in_heavy_filter
+                    })
+                    extraction_log.end_stage()
                     logger.info(f"最終的な専門用語数: {len(technical_terms)}個")
                 else:
                     logger.warning("No terms with definitions to filter")
