@@ -71,20 +71,38 @@ class RAGEvaluator:
         self.api_delay = api_delay
         
         load_dotenv()
-        
-        # Azure OpenAI Client for LLM-based similarity
-        self.azure_client = AzureOpenAI(
-            azure_endpoint=config.azure_openai_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_key=config.azure_openai_api_key or os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=config.azure_openai_api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2023-05-15")
-        )
+
+        # VLLMまたはAzure OpenAIの選択
+        if config.use_vllm:
+            # VLLM使用時はLLM類似度計算を無効化（またはVLLMクライアントを使用）
+            self.azure_client = None
+            from src.rag.vllm_client import VLLMClient
+            self.vllm_client = VLLMClient(
+                endpoint=config.vllm_endpoint,
+                temperature=0.0,
+                max_tokens=10,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                min_p=config.min_p,
+                reasoning_effort=config.vllm_reasoning_effort,
+                timeout=60
+            )
+        else:
+            # Azure OpenAI Client for LLM-based similarity
+            self.azure_client = AzureOpenAI(
+                azure_endpoint=config.azure_openai_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"),
+                api_key=config.azure_openai_api_key or os.getenv("AZURE_OPENAI_API_KEY"),
+                api_version=config.azure_openai_api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2023-05-15")
+            )
+            self.vllm_client = None
         
         # LangChain Azure Embeddings for embedding-based similarity
         self.embeddings = AzureOpenAIEmbeddings(
             azure_endpoint=config.azure_openai_endpoint,
             api_key=config.azure_openai_api_key,
             api_version=config.azure_openai_api_version,
-            azure_deployment=config.azure_openai_embedding_deployment_name
+            azure_deployment=config.azure_openai_embedding_deployment_name,
+            dimensions=1536  # 1536次元を明示的に指定
         )
         
         # Model names from config
@@ -144,17 +162,31 @@ class RAGEvaluator:
         
         try:
             await asyncio.sleep(self.api_delay)
-            response = await asyncio.to_thread(
-                self.azure_client.chat.completions.create,
-                model=self.llm_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0
-            )
-            numbers = re.findall(r'[0-9]*\.?[0-9]+', response.choices[0].message.content)
-            return float(numbers[0]) if numbers else 0.0
+
+            if self.vllm_client:
+                # VLLMを使用
+                response = await asyncio.to_thread(
+                    self.vllm_client.invoke,
+                    prompt
+                )
+                numbers = re.findall(r'[0-9]*\.?[0-9]+', response)
+                return float(numbers[0]) if numbers else 0.0
+            elif self.azure_client:
+                # Azure OpenAIを使用
+                response = await asyncio.to_thread(
+                    self.azure_client.chat.completions.create,
+                    model=self.llm_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=10,
+                    temperature=0
+                )
+                numbers = re.findall(r'[0-9]*\.?[0-9]+', response.choices[0].message.content)
+                return float(numbers[0]) if numbers else 0.0
+            else:
+                print("LLMクライアントが初期化されていません")
+                return 0.0
         except Exception as e:
-            print(f"Azure LLM類似度計算エラー: {e}")
+            print(f"LLM類似度計算エラー: {e}")
             return 0.0
 
     def calculate_text_overlap(self, text1: str, text2: str) -> float:

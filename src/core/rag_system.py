@@ -223,20 +223,39 @@ class RAGSystem:
         """Initialize LLM and embedding models with Azure OpenAI."""
         import logging
         logger = logging.getLogger(__name__)
-        logger.info("RAGSystem initialized with Azure OpenAI.")
-        self.llm = AzureChatOpenAI(
-            temperature=getattr(self.config, 'llm_temperature', 0.0),
-            max_tokens=getattr(self.config, 'max_tokens', 4096),
-            azure_deployment=self.config.azure_openai_chat_deployment_name,
-            api_key=self.config.azure_openai_api_key,
-            azure_endpoint=self.config.azure_openai_endpoint,
-            api_version=self.config.azure_openai_api_version
-        )
+
+        # VLLMまたはAzure OpenAIの選択
+        if self.config.use_vllm:
+            logger.info("RAGSystem initialized with VLLM.")
+            from src.rag.vllm_client import VLLMChatClient
+            self.llm = VLLMChatClient(
+                endpoint=self.config.vllm_endpoint,
+                temperature=getattr(self.config, 'llm_temperature', 0.0),
+                max_tokens=getattr(self.config, 'max_tokens', 4096),
+                top_p=self.config.top_p,
+                top_k=self.config.top_k,
+                min_p=self.config.min_p,
+                reasoning_effort=self.config.vllm_reasoning_effort,
+                timeout=120
+            )
+        else:
+            logger.info("RAGSystem initialized with Azure OpenAI.")
+            self.llm = AzureChatOpenAI(
+                temperature=getattr(self.config, 'llm_temperature', 0.0),
+                max_tokens=getattr(self.config, 'max_tokens', 4096),
+                azure_deployment=self.config.azure_openai_chat_deployment_name,
+                api_key=self.config.azure_openai_api_key,
+                azure_endpoint=self.config.azure_openai_endpoint,
+                api_version=self.config.azure_openai_api_version
+            )
+
+        # Embeddingsは常にAzure OpenAIを使用（VLLMはEmbeddingをサポートしていない）
         self.embeddings = AzureOpenAIEmbeddings(
             azure_deployment=self.config.azure_openai_embedding_deployment_name,
             api_key=self.config.azure_openai_api_key,
             azure_endpoint=self.config.azure_openai_endpoint,
-            api_version=self.config.azure_openai_api_version
+            api_version=self.config.azure_openai_api_version,
+            dimensions=1536  # 1536次元を明示的に指定
         )
 
     def _init_db(self):

@@ -916,42 +916,106 @@ def render_term_analysis():
 
                             # TF-IDF比較
                             if tfidf_scores and gt_tfidf:
-                                axes2[0, 0].hist(tfidf_scores, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
-                                axes2[0, 0].hist(gt_tfidf, bins=30, alpha=0.7, label='Ground Truth', color='blue', edgecolor='black')
+                                # 全候補のヒストグラム（背景）
+                                axes2[0, 0].hist(tfidf_scores, bins=30, alpha=0.3, label='全候補', color='gray', edgecolor='black')
+
+                                # Ground Truth用語の散布図（ヒストグラム上部）
+                                y_position = max(axes2[0, 0].get_ylim()) * 0.05  # ヒストグラムの5%の高さ
+                                axes2[0, 0].scatter(gt_tfidf, [y_position]*len(gt_tfidf),
+                                                   color='blue', s=100, alpha=0.8, marker='o',
+                                                   label=f'Ground Truth (n={len(gt_tfidf)})', zorder=5, edgecolors='darkblue', linewidths=1.5)
+
+                                # rug plot（x軸下部に縦線）
+                                for score in gt_tfidf:
+                                    axes2[0, 0].axvline(score, ymin=0, ymax=0.05, color='blue', linewidth=2, alpha=0.4)
+
+                                # 統計情報の縦線
+                                mean_gt_tfidf = sum(gt_tfidf) / len(gt_tfidf)
+                                mean_all_tfidf = sum(tfidf_scores) / len(tfidf_scores)
+                                axes2[0, 0].axvline(mean_gt_tfidf, color='blue', linestyle='--', linewidth=2,
+                                                   label=f'GT平均: {mean_gt_tfidf:.2f}', alpha=0.8)
+                                axes2[0, 0].axvline(mean_all_tfidf, color='gray', linestyle='--', linewidth=1.5,
+                                                   label=f'全体平均: {mean_all_tfidf:.2f}', alpha=0.6)
+
                                 axes2[0, 0].set_xlabel('TF-IDFスコア')
-                                axes2[0, 0].set_ylabel('用語数')
+                                axes2[0, 0].set_ylabel('全候補の用語数')
                                 axes2[0, 0].set_title('TF-IDFスコア: Ground Truth vs 全候補')
-                                axes2[0, 0].legend()
+                                axes2[0, 0].legend(loc='upper right', fontsize=8)
                                 axes2[0, 0].grid(True, alpha=0.3, axis='y')
 
                             # C-value比較
                             if cvalue_scores and gt_cvalue:
-                                axes2[0, 1].hist(cvalue_scores, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
-                                axes2[0, 1].hist(gt_cvalue, bins=30, alpha=0.7, label='Ground Truth', color='green', edgecolor='black')
+                                axes2[0, 1].hist(cvalue_scores, bins=30, alpha=0.3, label='全候補', color='gray', edgecolor='black')
+
+                                y_position = max(axes2[0, 1].get_ylim()) * 0.05
+                                axes2[0, 1].scatter(gt_cvalue, [y_position]*len(gt_cvalue),
+                                                   color='green', s=100, alpha=0.8, marker='o',
+                                                   label=f'Ground Truth (n={len(gt_cvalue)})', zorder=5, edgecolors='darkgreen', linewidths=1.5)
+
+                                for score in gt_cvalue:
+                                    axes2[0, 1].axvline(score, ymin=0, ymax=0.05, color='green', linewidth=2, alpha=0.4)
+
+                                mean_gt_cvalue = sum(gt_cvalue) / len(gt_cvalue)
+                                mean_all_cvalue = sum(cvalue_scores) / len(cvalue_scores)
+                                axes2[0, 1].axvline(mean_gt_cvalue, color='green', linestyle='--', linewidth=2,
+                                                   label=f'GT平均: {mean_gt_cvalue:.2f}', alpha=0.8)
+                                axes2[0, 1].axvline(mean_all_cvalue, color='gray', linestyle='--', linewidth=1.5,
+                                                   label=f'全体平均: {mean_all_cvalue:.2f}', alpha=0.6)
+
                                 axes2[0, 1].set_xlabel('C-valueスコア')
-                                axes2[0, 1].set_ylabel('用語数')
+                                axes2[0, 1].set_ylabel('全候補の用語数')
                                 axes2[0, 1].set_title('C-valueスコア: Ground Truth vs 全候補')
-                                axes2[0, 1].legend()
+                                axes2[0, 1].legend(loc='upper right', fontsize=8)
                                 axes2[0, 1].grid(True, alpha=0.3, axis='y')
 
                             # Base Score比較
                             if base_scores_all and gt_base:
-                                axes2[1, 0].hist(base_scores_all, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
-                                axes2[1, 0].hist(gt_base, bins=30, alpha=0.7, label='Ground Truth', color='orange', edgecolor='black')
+                                axes2[1, 0].hist(base_scores_all, bins=30, alpha=0.3, label='全候補', color='gray', edgecolor='black')
+
+                                y_position = max(axes2[1, 0].get_ylim()) * 0.05
+                                axes2[1, 0].scatter(gt_base, [y_position]*len(gt_base),
+                                                   color='orange', s=100, alpha=0.8, marker='o',
+                                                   label=f'Ground Truth (n={len(gt_base)})', zorder=5, edgecolors='darkorange', linewidths=1.5)
+
+                                for score in gt_base:
+                                    axes2[1, 0].axvline(score, ymin=0, ymax=0.05, color='orange', linewidth=2, alpha=0.4)
+
+                                mean_gt_base = sum(gt_base) / len(gt_base)
+                                mean_all_base = sum(base_scores_all) / len(base_scores_all)
+                                axes2[1, 0].axvline(mean_gt_base, color='orange', linestyle='--', linewidth=2,
+                                                   label=f'GT平均: {mean_gt_base:.2f}', alpha=0.8)
+                                axes2[1, 0].axvline(mean_all_base, color='gray', linestyle='--', linewidth=1.5,
+                                                   label=f'全体平均: {mean_all_base:.2f}', alpha=0.6)
+
                                 axes2[1, 0].set_xlabel('Base Score')
-                                axes2[1, 0].set_ylabel('用語数')
+                                axes2[1, 0].set_ylabel('全候補の用語数')
                                 axes2[1, 0].set_title('Base Score: Ground Truth vs 全候補')
-                                axes2[1, 0].legend()
+                                axes2[1, 0].legend(loc='upper right', fontsize=8)
                                 axes2[1, 0].grid(True, alpha=0.3, axis='y')
 
                             # Revised Score比較
                             if revised_scores_all and gt_revised:
-                                axes2[1, 1].hist(revised_scores_all, bins=30, alpha=0.5, label='全候補', color='gray', edgecolor='black')
-                                axes2[1, 1].hist(gt_revised, bins=30, alpha=0.7, label='Ground Truth', color='purple', edgecolor='black')
+                                axes2[1, 1].hist(revised_scores_all, bins=30, alpha=0.3, label='全候補', color='gray', edgecolor='black')
+
+                                y_position = max(axes2[1, 1].get_ylim()) * 0.05
+                                axes2[1, 1].scatter(gt_revised, [y_position]*len(gt_revised),
+                                                   color='purple', s=100, alpha=0.8, marker='o',
+                                                   label=f'Ground Truth (n={len(gt_revised)})', zorder=5, edgecolors='indigo', linewidths=1.5)
+
+                                for score in gt_revised:
+                                    axes2[1, 1].axvline(score, ymin=0, ymax=0.05, color='purple', linewidth=2, alpha=0.4)
+
+                                mean_gt_revised = sum(gt_revised) / len(gt_revised)
+                                mean_all_revised = sum(revised_scores_all) / len(revised_scores_all)
+                                axes2[1, 1].axvline(mean_gt_revised, color='purple', linestyle='--', linewidth=2,
+                                                   label=f'GT平均: {mean_gt_revised:.2f}', alpha=0.8)
+                                axes2[1, 1].axvline(mean_all_revised, color='gray', linestyle='--', linewidth=1.5,
+                                                   label=f'全体平均: {mean_all_revised:.2f}', alpha=0.6)
+
                                 axes2[1, 1].set_xlabel('Revised Score')
-                                axes2[1, 1].set_ylabel('用語数')
+                                axes2[1, 1].set_ylabel('全候補の用語数')
                                 axes2[1, 1].set_title('Revised Score: Ground Truth vs 全候補')
-                                axes2[1, 1].legend()
+                                axes2[1, 1].legend(loc='upper right', fontsize=8)
                                 axes2[1, 1].grid(True, alpha=0.3, axis='y')
 
                             plt.tight_layout()

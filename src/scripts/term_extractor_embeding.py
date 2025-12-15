@@ -40,7 +40,8 @@ async def run_pipeline(input_dir: Path, output_json: Path):
         azure_endpoint=cfg.azure_openai_endpoint,
         api_key=cfg.azure_openai_api_key,
         api_version=cfg.azure_openai_api_version,
-        azure_deployment=cfg.azure_openai_embedding_deployment_name
+        azure_deployment=cfg.azure_openai_embedding_deployment_name,
+        dimensions=1536  # 1536次元を明示的に指定
     )
 
     # ベクトルストアの初期化

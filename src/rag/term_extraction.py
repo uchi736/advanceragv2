@@ -894,8 +894,10 @@ class TermExtractor:
 
         # ログを保存
         try:
-            json_path, txt_path = extraction_log.save()
+            json_path, txt_path, dropout_path = extraction_log.save()
             logger.info(f"Extraction log saved: {txt_path}")
+            if dropout_path:
+                logger.info(f"Dropout report saved: {dropout_path}")
         except Exception as e:
             logger.error(f"Failed to save extraction log: {e}")
 

@@ -44,7 +44,8 @@ embeddings = AzureOpenAIEmbeddings(
     azure_deployment=cfg.azure_openai_embedding_deployment_name,
     api_version=cfg.azure_openai_api_version,
     azure_endpoint=cfg.azure_openai_endpoint,
-    api_key=cfg.azure_openai_api_key
+    api_key=cfg.azure_openai_api_key,
+    dimensions=1536  # 1536次元を明示的に指定
 )
 
 # Azure OpenAI LLM for naming (4.1-mini使用)

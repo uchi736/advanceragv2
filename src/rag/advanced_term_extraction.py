@@ -894,9 +894,9 @@ class AdvancedStatisticalExtractor:
         TF-IDF計算（形態素ベース・完全一致）
 
         Args:
-            documents: 文書リスト（文単位で分割、TF計算用）
+            documents: 文書リスト（文単位で分割、後方互換性のため残すがper_document_texts使用時は無視）
             candidates: 候補用語と頻度
-            per_document_texts: ドキュメント単位のテキスト（DF計算用、推奨）
+            per_document_texts: ドキュメント単位のテキスト（推奨：TFとDFの両方をドキュメント単位で計算）
 
         Returns:
             TF-IDFスコアの辞書
@@ -912,86 +912,95 @@ class AdvancedStatisticalExtractor:
             except:
                 term_token_map[term] = (term,)  # フォールバック
 
-        # 1. 各用語の文書頻度（DF）を計算
-        # per_document_textsが提供されていればドキュメント単位でDF計算（推奨）
+        # ドキュメント単位でTFとDFを計算（推奨パス）
         if per_document_texts:
-            logger.info(f"Calculating DF at document level (N={len(per_document_texts)} documents)")
+            logger.info(f"Calculating TF-IDF at document level (N={len(per_document_texts)} documents)")
             N = len(per_document_texts)  # ドキュメント数
             df = defaultdict(int)
+            doc_term_frequencies = []  # ドキュメントごとの用語頻度
 
             for doc_text in per_document_texts:
-                # このドキュメント内に出現する用語のセット
-                doc_has_term = set()
-
                 # 形態素解析してトークン化
                 tokens = self._safe_tokenize(doc_text, self.sudachi_mode_a)
                 token_surfaces = tuple([t.surface() for t in tokens])
 
-                # 各用語がこのドキュメントに出現するかチェック
+                doc_term_count = defaultdict(int)
+                doc_has_term = set()
+
+                # ドキュメント全体での用語出現回数をカウント
                 for term, term_tokens in term_token_map.items():
                     term_len = len(term_tokens)
-                    found = False
 
+                    # トークン列を走査して用語を検索
                     for i in range(len(token_surfaces) - term_len + 1):
                         if token_surfaces[i:i+term_len] == term_tokens:
+                            doc_term_count[term] += 1
                             doc_has_term.add(term)
-                            found = True
-                            break
 
-                    if found:
-                        continue  # 次の用語へ
-
-                # このドキュメントに出現した用語のDFをインクリメント
+                # DF更新（ドキュメント単位で1回だけカウント）
                 for term in doc_has_term:
                     df[term] += 1
 
+                doc_term_frequencies.append(doc_term_count)
+
+            # TF-IDF計算（ドキュメント単位）
+            tfidf_scores = {}
+            for term in vocabulary:
+                total_tfidf = 0.0
+                for doc_tf_dict in doc_term_frequencies:
+                    raw_tf = doc_tf_dict.get(term, 0)
+                    if raw_tf > 0 and df.get(term, 0) > 0:
+                        # サブリニアTF（log圧縮で頻度10と100の差を緩和）
+                        tf = 1 + math.log(raw_tf)
+                        # Laplace平滑化IDF（df=Nで0、df=0でエラーを防ぐ）
+                        idf = math.log((N + 1) / (df[term] + 1)) + 1
+                        total_tfidf += tf * idf
+
+                tfidf_scores[term] = total_tfidf
+
         else:
-            # 従来通り文単位でDF計算（後方互換性）
-            logger.warning("Calculating DF at sentence level (less accurate). Consider providing per_document_texts.")
+            # 後方互換性: 文単位でTFとDFを計算
+            logger.warning("Calculating TF-IDF at sentence level (less accurate). Consider providing per_document_texts.")
             N = len(documents)  # 文数
             df = defaultdict(int)
+            term_freq_per_doc = []  # 各文での用語頻度
 
-        # 2. TF計算は文単位で実施（細かい粒度を維持）
-        term_freq_per_doc = []  # 各文での用語頻度
+            for doc in documents:
+                # 形態素解析してトークン化（Mode A）
+                tokens = self._safe_tokenize(doc, self.sudachi_mode_a)
+                token_surfaces = tuple([t.surface() for t in tokens])
 
-        for doc in documents:
-            # 形態素解析してトークン化（Mode A）
-            tokens = self._safe_tokenize(doc, self.sudachi_mode_a)
-            token_surfaces = tuple([t.surface() for t in tokens])
+                # n-gramで用語マッチング（完全一致のみ）
+                doc_term_count = defaultdict(int)
 
-            # n-gramで用語マッチング（完全一致のみ）
-            doc_term_count = defaultdict(int)
+                for term, term_tokens in term_token_map.items():
+                    term_len = len(term_tokens)
 
-            for term, term_tokens in term_token_map.items():
-                term_len = len(term_tokens)
+                    # トークン列を走査して用語を検索
+                    for i in range(len(token_surfaces) - term_len + 1):
+                        if token_surfaces[i:i+term_len] == term_tokens:
+                            doc_term_count[term] += 1
 
-                # トークン列を走査して用語を検索
-                for i in range(len(token_surfaces) - term_len + 1):
-                    if token_surfaces[i:i+term_len] == term_tokens:
-                        doc_term_count[term] += 1
-
-            # 従来のDF計算（per_document_textsがない場合のみ）
-            if not per_document_texts:
+                # DF計算（文単位）
                 for term in doc_term_count:
                     df[term] += 1
 
-            term_freq_per_doc.append(doc_term_count)
+                term_freq_per_doc.append(doc_term_count)
 
-        # 2. TF-IDF計算（平滑化版）
-        tfidf_scores = {}
-        for term in vocabulary:
-            # 各文書でのTF-IDF合計
-            total_tfidf = 0.0
-            for doc_tf in term_freq_per_doc:
-                raw_tf = doc_tf.get(term, 0)
-                if raw_tf > 0 and df.get(term, 0) > 0:
-                    # サブリニアTF（log圧縮で頻度10と100の差を緩和）
-                    tf = 1 + math.log(raw_tf)
-                    # Laplace平滑化IDF（df=Nで0、df=0でエラーを防ぐ）
-                    idf = math.log((N + 1) / (df[term] + 1)) + 1
-                    total_tfidf += tf * idf
+            # TF-IDF計算（文単位の合算）
+            tfidf_scores = {}
+            for term in vocabulary:
+                total_tfidf = 0.0
+                for doc_tf in term_freq_per_doc:
+                    raw_tf = doc_tf.get(term, 0)
+                    if raw_tf > 0 and df.get(term, 0) > 0:
+                        # サブリニアTF（log圧縮で頻度10と100の差を緩和）
+                        tf = 1 + math.log(raw_tf)
+                        # Laplace平滑化IDF（df=Nで0、df=0でエラーを防ぐ）
+                        idf = math.log((N + 1) / (df[term] + 1)) + 1
+                        total_tfidf += tf * idf
 
-            tfidf_scores[term] = total_tfidf
+                tfidf_scores[term] = total_tfidf
 
         return tfidf_scores
 

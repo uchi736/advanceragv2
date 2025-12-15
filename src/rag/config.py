@@ -32,6 +32,14 @@ class Config:
     azure_openai_chat_mini_deployment_name: Optional[str] = None  # 4o-mini/4.1-mini用
     azure_openai_embedding_deployment_name: Optional[str] = None
 
+    # VLLM settings (populated in __post_init__)
+    use_vllm: bool = False
+    vllm_endpoint: Optional[str] = None
+    vllm_reasoning_effort: str = "medium"
+    top_p: float = 0.7
+    top_k: int = 5
+    min_p: float = 0.0
+
     # LLM settings (populated in __post_init__)
     llm_temperature: float = 0.0
     max_tokens: int = 0
@@ -69,6 +77,14 @@ class Config:
         self.azure_openai_chat_deployment_name = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
         self.azure_openai_chat_mini_deployment_name = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")  # 4.1-mini使用
         self.azure_openai_embedding_deployment_name = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
+
+        # VLLM settings
+        self.use_vllm = os.getenv("USE_VLLM", "false").lower() == "true"
+        self.vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8004/v1")
+        self.vllm_reasoning_effort = os.getenv("VLLM_REASONING_EFFORT", "medium")
+        self.top_p = float(os.getenv("TOP_P", "0.7"))
+        self.top_k = int(os.getenv("TOP_K", "5"))
+        self.min_p = float(os.getenv("MIN_P", "0.0"))
 
         # LLM settings
         self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
